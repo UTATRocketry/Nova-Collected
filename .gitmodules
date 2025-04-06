@@ -1,0 +1,13 @@
+[submodule "novaOPS-front"]
+	path = novaOPS-front
+	url = https://github.com/UTATRocketry/novaOPS-front
+[submodule "novaOPS-back"]
+	path = novaOPS-back
+	url = https://github.com/UTATRocketry/novaOPS-back
+	branch = fastapi_server
+[submodule "novaGround"]
+	path = novaGround
+	url = https://github.com/blobcode/novaGround
+[submodule "daqhats"]
+	path = daqhats
+	url = https://github.com/mccdaq/daqhats.git
