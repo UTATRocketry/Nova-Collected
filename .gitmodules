@@ -1,13 +1,16 @@
-[submodule "novaOPS-front"]
-	path = novaOPS-front
-	url = https://github.com/UTATRocketry/novaOPS-front
-[submodule "novaOPS-back"]
-	path = novaOPS-back
-	url = https://github.com/UTATRocketry/novaOPS-back
-	branch = fastapi_server
-[submodule "novaGround"]
-	path = novaGround
-	url = https://github.com/blobcode/novaGround
-[submodule "daqhats"]
-	path = daqhats
-	url = https://github.com/mccdaq/daqhats.git
+[submodule "pi/novaGround"]
+	path = pi/novaGround
+	url = https://github.com/UTATRocketry/novaGround.git
+	branch = code_refactoring
+[submodule "prod/novaOps-back"]
+	path = prod/novaOps-back
+	url = https://github.com/UTATRocketry/novaOps-back.git
+	branch = fas_integration
+[submodule "prod/novaOPS-front"]
+	path = prod/novaOPS-front
+	url = https://github.com/UTATRocketry/novaOPS-front.git
+	branch = fas_refactor
+[submodule "firmware"]
+	path = firmware
+	url = https://github.com/UTATRocketry/Gigafloss-FAS-Firmware-and-Server.git
+	branch = main
