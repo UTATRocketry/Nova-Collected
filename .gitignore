@@ -1,3 +1,25 @@
 .DS_Store
 __pycache__/
 *.pyc
+
+# Machine-local state on the ops PC (C:\Nova). These sit beside the tracked
+# folders but are never committed: they belong to the station, not the code.
+#   dev/        free-running dev clones, any branch
+#   config/     live station config + its automatic history
+#   data/       raw recordings as they are written
+#   archive/    self-contained recording bundles (config + data + meta)
+#   state/      what each environment is running
+dev/*
+!dev/.gitkeep
+/config/
+/data/
+/archive/
+/logs/
+/bin/
+/state/
+/console.json
+/releases.json
+
+# This machine's own settings (real admin password, COM port). Nova.ps1 creates
+# it from the tracked ops/nova.settings.example.ps1 if it is missing.
+/ops/nova.settings.ps1

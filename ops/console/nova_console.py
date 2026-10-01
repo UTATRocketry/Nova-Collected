@@ -518,6 +518,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
     read_only: bool
     log_dir: str
     known_services: set
+    release_index: str
 
     def log_message(self, fmt, *args):  # quieter than the default access log
         pass
@@ -548,6 +549,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True})
         elif path == "/api/status":
             self._json(200, self.collector.get(force=params.get("force") == "1"))
+        elif path == "/api/releases" or path.startswith("/api/releases/"):
+            self._releases(urllib.parse.unquote(path[len("/api/releases/"):]) if path != "/api/releases" else "")
         elif path == "/api/logs":
             name = urllib.parse.unquote(params.get("service", ""))
             if name not in self.known_services:
@@ -559,6 +562,32 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._send(200, body.encode("utf-8"), "text/plain; charset=utf-8")
         else:
             self._send(404, b"not found", "text/plain; charset=utf-8")
+
+    def _releases(self, which: str) -> None:
+        """Release lookup for the Pi: `nova-pi.sh deploy <tag>` asks here which
+        novaGround commit a tag pins. Served from the index Nova.ps1 regenerates
+        after pin/promote/deploy/publish; read fresh each time.
+
+          /api/releases            the whole index
+          /api/releases/stable     the newest promoted release
+          /api/releases/<tag>      one release
+        """
+        try:
+            with open(self.release_index, "r", encoding="utf-8-sig") as fh:
+                index = json.load(fh)
+        except (OSError, ValueError):
+            self._json(404, {"ok": False, "message": "no release index yet - run Nova.ps1 pin"})
+            return
+        if not which:
+            self._json(200, index)
+            return
+        if which == "stable":
+            which = index.get("latestStable") or ""
+        for release in index.get("releases", []):
+            if release.get("tag") == which:
+                self._json(200, release)
+                return
+        self._json(404, {"ok": False, "message": f"unknown release {which!r}"})
 
     def do_POST(self):  # noqa: N802
         if self.path != "/api/action":
@@ -612,6 +641,7 @@ def main() -> None:
     ConsoleHandler.read_only = args.read_only
     ConsoleHandler.log_dir = config.get("logDir", r"C:\Nova\logs")
     ConsoleHandler.known_services = known
+    ConsoleHandler.release_index = config.get("releaseIndex", r"C:\Nova\releases.json")
 
     server = ThreadingHTTPServer((args.bind, args.port), ConsoleHandler)
     server.daemon_threads = True

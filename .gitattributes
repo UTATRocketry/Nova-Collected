@@ -3,4 +3,10 @@
 *.sh  text eol=lf
 *.py  text eol=lf
 *.md  text eol=lf
+*.json text eol=lf
 .gitmodules text eol=lf
+
+# Config files recorded by `Nova.ps1 pin` are identified by a hash of their
+# exact bytes. Never let git convert their line endings, or a deployed config
+# would no longer match the hash of the one that was tested.
+releases/*/config/** -text

@@ -1,6 +1,6 @@
 # Nova ground station - operations
 
-How the Nova ground station starts, stops, and is checked. 
+How the Nova ground station starts, stops, is checked and is updated.
 
 ## 1. Operator quick start
 
@@ -47,55 +47,151 @@ Each machine supervises its own processes; nothing is launched by hand.
 
 ## 3. Command reference
 
-Windows commands run from the root of your **Nova-Collected** clone. Pi commands
-run from the novaGround checkout on the Pi. Anything that touches a service needs
-an **elevated** PowerShell.
+Windows commands run from `C:\Nova` (the Nova repo) in an **elevated**
+PowerShell. Pi commands run from the novaGround checkout on the Pi.
 
-### Windows (Nova Server) - `ops\Nova.ps1`
+### Updating the ground station
+
+Every new version goes through dev, a hardware test and a pin before it can
+reach prod. Each step is one command, and only `publish` needs internet.
+
+**1. Get the code you want to test into dev**
 
 ```powershell
-.\ops\Nova.ps1 status
+.\ops\Nova.ps1 get-changes
+```
+
+This pulls the branch each dev folder is on, then reinstalls and rebuilds dev.
+A normal test day tests the `dev` branch, which holds every merged feature
+waiting for hardware:
+
+```powershell
+.\ops\Nova.ps1 get-changes -Ref dev
+```
+
+To try one open PR's branch on the bench before it's merged, use `-Ref` with
+that branch, and `-Only` if only one repo is involved:
+
+```powershell
+.\ops\Nova.ps1 get-changes -Ref fix/fas-port-reconnect -Only backend
+```
+
+On the Pi, update its dev checkout with git, then `./nova-pi.sh build --env dev`.
+
+**2. Switch to dev and test with hardware**
+
+```powershell
+.\ops\Nova.ps1 use dev
+```
+
+This stops prod and starts dev (the prod console stays up). The dev operator
+UI is on port 3001. Run the Integration Test. On the Pi, stop the prod
+service and run `./run.sh` from the dev checkout. Afterwards:
+
+```powershell
+.\ops\Nova.ps1 use prod
+```
+
+**3. Pin what you tested**
+
+```powershell
+.\ops\Nova.ps1 pin -Test "integration test" -Notes "All valves cycled; PGSO drift noted"
+```
+
+This records the commits the dev stack and the Pi's dev checkout are running,
+plus the dev config, as a new release such as `v2026.10.04`. It also lists the
+test's recordings and bundles them into `C:\Nova\archive`.
+
+`pin` refuses if any tested checkout has uncommitted changes, because that code
+could never be checked out again. It records which branch each repo was on.
+That's normally `dev`, but any branch can be pinned. It warns when the branch
+isn't `dev`, `main`, `hotfix/*` or `release/*`, and the release notes show it.
+
+It reads the Pi over SSH. If the Pi is unreachable, pass
+`-GroundCommit <full hash> -GroundBranch dev`, or `-SkipPi` to keep the
+current novaGround pin. `-Firmware <commit>` updates the firmware reference.
+
+**4. Approve it for prod** (once it has earned it; a pinned release can still
+be an intermediate version)
+
+```powershell
+.\ops\Nova.ps1 promote v2026.10.04
+```
+
+This marks the release stable. The next `publish` creates a
+`release/v2026.10.04` branch in each code repo at the tested commit and opens
+its PR into `main`. Merge each with **Create a merge commit**
+([CONTRIBUTING.md §5](../CONTRIBUTING.md#5-getting-code-to-prod-leads)).
+
+**5. Deploy to prod**
+
+```powershell
+.\ops\Nova.ps1 deploy
+```
+
+This deploys the newest stable release. It checks out the pinned commits in
+`prod\`, reinstalls, restarts and deploys the Pi over SSH. It always prints the
+novaGround commit, so you can do the Pi step by hand if needed. It compares
+prod's live config with the tested config; add `-WithConfig` to switch prod to
+the tested config (the old one is kept in history).
+
+To roll back, or to deploy a pre-release on purpose:
+
+```powershell
+.\ops\Nova.ps1 deploy v2026.09.12
 ```
 
 ```powershell
-.\ops\Nova.ps1 doctor
+.\ops\Nova.ps1 deploy v2026.10.04 -AllowPrerelease
 ```
+
+**6. Publish when online**
 
 ```powershell
-.\ops\Nova.ps1 restart -Env prod
+.\ops\Nova.ps1 publish
 ```
 
-Every verb, all independently runnable:
+This pushes the pins and tags and creates or updates the GitHub releases:
+pinned = pre-release, stable = release, newest stable = **Latest**. It also
+pushes the `release/*` branches made by `promote` and opens their PRs into
+`main`. It refuses
+if a pinned commit is not on GitHub yet, and prints the `git push` that fixes
+it. `-DryRun` shows what it would do.
 
-| Verb | What it does |
-|---|---|
-| `install` | Create/refresh services, install deps, build the frontend, write the console config, create shortcuts |
-| `uninstall` | Stop and remove services. Leaves code and logs alone |
-| `start` / `stop` / `restart` | Control services (broker started first, stopped last) |
-| `status` | Service table + health probes + Pi reachability |
-| `update` | `git pull`, reinstall deps, rebuild frontend, reinstall services, restart |
-| `logs` | Tail a service's stdout and stderr |
-| `doctor` | Check every prerequisite and print what is missing |
+### Every verb
+
+| Verb | Environment | What it does |
+|---|---|---|
+| `get-changes` | dev only | Fetch, check out (`-Ref`), fast-forward, reinstall and rebuild dev |
+| `use dev` / `use prod` | either | Stop one stack, start the other (the prod console always stays up) |
+| `pin` | reads dev | Record dev's commits, the Pi's commit and dev config as a release tag |
+| `promote <tag>` | - | Mark a pinned release stable and create its `release/<tag>` branches |
+| `deploy [<tag>]` | prod only | Put a release into prod and the Pi (default: newest stable) |
+| `publish` | - | Push releases and tags; create/update GitHub releases |
+| `archive` | - | Bundle finished recordings into `C:\Nova\archive` |
+| `hotfix -Name <what> -Test "..."` | prod only | Turn emergency edits in the prod checkouts (PC and Pi), just tested on prod, into `hotfix/<what>` branches, and pin them as a new release. `publish` opens their PRs |
+| `install` | `-Env` | Create/refresh services, install deps, build the frontend, set up station folders |
+| `uninstall` | `-Env` | Stop and remove services. Leaves code, config, data and logs alone |
+| `start` / `stop` / `restart` | `-Env` | Control services (broker started first, stopped last) |
+| `status` | both | Services, health, Pi reachability, which stack is live, what each is running |
+| `logs` | `-Env` | Tail a service's stdout and stderr |
+| `doctor` | both | Check every prerequisite and print what is missing |
+
+The workflow verbs work on one environment each and refuse the other; only
+the service verbs take `-Env prod|dev` (default `prod`).
 
 Useful flags:
 
-- `-Env prod|dev` - which stack (default `prod`)
 - `-Only backend,fas` - limit to specific components
 - `-Offline` - skip pip/npm/WinSW downloads, for a field machine with no internet
 - `-Follow` - with `logs`, tail continuously
-
-Examples:
 
 ```powershell
 .\ops\Nova.ps1 restart -Env prod -Only fas
 ```
 
 ```powershell
-.\ops\Nova.ps1 logs -Env prod -Only backend -Follow
-```
-
-```powershell
-.\ops\Nova.ps1 update -Env prod -Offline
+.\ops\Nova.ps1 logs -Env dev -Only backend -Follow
 ```
 
 ### Raspberry Pi - `./nova-pi.sh`
@@ -108,23 +204,35 @@ Same verbs: `install`, `uninstall`, `build`, `start`, `stop`, `restart`,
 `status`, `logs`, `update`, `doctor`. Add `--env dev` to act on
 `/home/admin/dev/novaGround`.
 
+`deploy` is the Pi half of `Nova.ps1 deploy`. It always targets prod:
+
 ```bash
-sudo ./nova-pi.sh update
+sudo ./nova-pi.sh deploy v2026.10.04
 ```
+
+With a tag, it asks the Nova Console on the ops PC which novaGround commit that
+release pins. With no argument, it uses the newest stable release. If the
+console is unreachable, pass the commit that `Nova.ps1 deploy` printed:
+
+```bash
+sudo ./nova-pi.sh deploy 9042566e66e4ad78857af3ec144289aaca480842
+```
+
+The commit comes from GitHub, or, offline, from the Pi's dev checkout.
 
 ### Running in the foreground (debugging)
 
-When a service will not stay up, run the same programs in a visible window.
-The Windows launchers are in the backend repo (`novaOps/backend/scripts/`);
-`run.sh` is in novaGround on the Pi:
-
+When a service will not start or stay up, run the same programs in a visible window.
+The Windows launchers are in the backend repo (`prod\backend\scripts\`)
 ```powershell
 .\scripts\prod_windows.ps1
 ```
 
 ```powershell
-.\scripts\dev_windows.ps1 -WithDummy
+.\scripts\dev_windows.ps1 -WithMock
 ```
+
+#### For novaGround:
 
 ```bash
 ./run.sh --target novaMock
@@ -137,32 +245,71 @@ the serial port or the broker client ID.
 
 ## 4. First-time setup
 
-### Nova Server
+### Nova Server (new machine)
 
 1. Install **Python 3.11+** (tick "Add to PATH"), **Node.js 20+**, **Git**, and
-   **Mosquitto** (as a Windows service).
-2. Clone Nova-Collected, for example to `C:\Nova\Nova-Collected`. The console
-   service runs from this clone, so don't delete or move it afterwards.
-3. Clone the backend and frontend to the layout in `ops/nova.config.ps1`:
-   - `C:\Nova\prod\novaOps-back`, `C:\Nova\prod\novaOPS-front`
-   - `C:\Nova\dev\novaOps-back`, `C:\Nova\dev\novaOPS-front`
+   **Mosquitto** (as a Windows service). For `publish`, also install the
+   GitHub CLI (`winget install GitHub.cli`) and run `gh auth login`.
+2. Clone this repo (Nova-Collected on GitHub) **as** `C:\Nova`, with the
+   prod submodules:
 
-   Check out the commits pinned in Nova-Collected (`git submodule status`).
-4. Review `ops\nova.config.ps1` - especially `FasPort` and `AdminPassword`.
-5. From an elevated PowerShell in `C:\Nova\Nova-Collected`:
+   ```powershell
+   git clone https://github.com/UTATRocketry/Nova-Collected.git C:\Nova
+   ```
 
-```powershell
-.\ops\Nova.ps1 install -Env prod
-```
+   ```powershell
+   git -C C:\Nova submodule update --init prod/backend prod/frontend firmware
+   ```
 
-6. Verify:
+3. Clone the dev checkouts. The dev stack runs from these, normally on the
+   `dev` branch:
 
-```powershell
-.\ops\Nova.ps1 doctor
-```
+   ```powershell
+   git clone -b dev https://github.com/UTATRocketry/novaOps-back.git C:\Nova\dev\backend
+   ```
 
-Repeat step 5 with `-Env dev` if you want the dev services registered (they
-will not auto-start).
+   ```powershell
+   git clone -b dev https://github.com/UTATRocketry/novaOPS-front.git C:\Nova\dev\frontend
+   ```
+
+4. Create this PC's settings file from the tracked example, and set at least
+   the real admin password and `FasPort` in it:
+
+   ```powershell
+   Copy-Item C:\Nova\ops\nova.settings.example.ps1 C:\Nova\ops\nova.settings.ps1
+   notepad C:\Nova\ops\nova.settings.ps1
+   ```
+
+   `nova.settings.ps1` is the only settings file `Nova.ps1` reads, and it's
+   never committed, like the frontend's `.env` (made from `.env.example`). If
+   you skip this step, the first `Nova.ps1` command copies the example for
+   you.
+5. Set up key-based SSH to the Pi so `pin` and `deploy` don't prompt for a
+   password each time:
+
+   ```powershell
+   ssh-keygen -t ed25519
+   ```
+
+   ```powershell
+   type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh admin@192.168.137.10 "cat >> ~/.ssh/authorized_keys"
+   ```
+
+6. From an elevated PowerShell in `C:\Nova`:
+
+   ```powershell
+   .\ops\Nova.ps1 install -Env prod
+   ```
+
+   ```powershell
+   .\ops\Nova.ps1 install -Env dev
+   ```
+
+7. Verify:
+
+   ```powershell
+   .\ops\Nova.ps1 doctor
+   ```
 
 ### Raspberry Pi
 
@@ -170,15 +317,24 @@ will not auto-start).
 cd /home/admin/prod/novaGround && sudo ./install.sh
 ```
 
-Then confirm with `sudo ./nova-pi.sh doctor`.
+Then confirm with `sudo ./nova-pi.sh doctor`. Keep a second clone at
+`/home/admin/dev/novaGround` for testing. `pin` reads it and `deploy` falls back
+to it when offline.
 
 ### Changing settings later
 
 Never edit a service definition directly. Change the source of truth and
 reinstall:
 
-- **Windows:** edit `ops\nova.config.ps1`, then `.\ops\Nova.ps1 install -Env prod`
+- **Windows:** edit `ops\nova.settings.ps1` (this PC's own, untracked copy),
+  then `.\ops\Nova.ps1 install -Env prod`.
+- **A new default or a new setting for every station:** change
+  `ops/nova.settings.example.ps1` through a PR. Stations whose `nova.settings.ps1`
+  lacks a new setting use the example's value, with a warning (and a `doctor`
+  line) until it's copied across.
 - **Pi:** edit `/etc/nova/novaGround.env`, then `sudo systemctl restart novaGround`
+- **Sensor/actuator config:** edit it in the web interface. It is saved to
+  `C:\Nova\config\<env>\` and every version is kept in `C:\Nova\config\history\`.
 
 ---
 
@@ -192,11 +348,18 @@ the Pi. Most problems are one FAIL line.
 | Everything red, console reachable | Mosquitto is not running. `Start-Service mosquitto` |
 | Console itself unreachable | The console service is stopped. `.\ops\Nova.ps1 start -Only console` |
 | Backend amber forever | It is running but `/health` does not answer - check its logs for a config or port error |
-| Frontend red right after an update | `next build` failed or `.next` is missing. Re-run `install` and read the build output |
-| FAS bridge red | The COM port in `nova.config.ps1` does not exist. `doctor` prints the ports that do |
+| Frontend red right after a deploy | `next build` failed or `.next` is missing. Re-run `install` and read the build output |
+| FAS bridge red | The COM port in `ops\nova.settings.ps1` does not exist. `doctor` prints the ports that do |
 | novaGround red under Remote hosts | Pi off, cable out, or its IP changed. See section 6 |
-| Telemetry flickers between two sources | Two things are publishing - a bench `run.sh` session and the systemd service are both up |
-| Update fails with "not a fast-forward" | Someone committed on the ground-station machine. Resolve by hand |
+| Telemetry flickers between two sources | Two things are publishing - a bench `run.sh` session and the systemd service are both up, or both stacks are running (`use prod`) |
+| `get-changes`: "cannot fast-forward" | Someone committed in the dev folder. Push or reset it by hand |
+| `pin`: "has uncommitted changes" | Commit (and ideally push) the tested code, then pin again |
+| `pin` warns "not on dev, main, hotfix/* or release/*" | Dev was running a feature branch. Fine for a one-off test; say why in `-Notes` |
+| `pin`: "local 'dev' has commits that are not on origin/dev" | Someone committed on the ops PC. Move the commit to a branch and PR it |
+| `pin`: "Could not read the Pi's dev commit" | SSH to the Pi failed. Fix it, or pass `-GroundCommit` / `-SkipPi` |
+| `deploy`: "has local changes to tracked files" | Something was edited inside `prod\`. If it was a tested emergency fix, capture it with `Nova.ps1 hotfix`. Otherwise stash or discard it. Config belongs in `C:\Nova\config\prod` |
+| `publish`: "not on GitHub yet" | Push the listed commits (the command to run is printed), then publish again |
+| `git status` shows `prod/*` modified | Normal when prod is not on the newest pin. `Nova.ps1 status` says what prod runs |
 
 Logs:
 
@@ -271,12 +434,19 @@ Work through it in this order:
 
 | Path | What it is |
 |---|---|
-| `ops/nova.config.ps1` | **Single source of truth** for Windows: paths, ports, IPs |
-| `ops/Nova.ps1` | Install/start/stop/restart/update/status/logs/doctor |
-| `ops/console/nova_console.py` | The standalone status page (stdlib only) |
-| `novaOps/backend/scripts/prod_windows.ps1` | Foreground prod launcher, for debugging |
-| `novaOps/backend/scripts/dev_windows.ps1` | Foreground dev launcher, hot reload |
-| `novaOps/backend/scripts/dev_linux.sh` | Same, for Linux/macOS bench work |
+| `ops\nova.settings.ps1` | **The** settings file: paths, ports, IPs, COM port, admin password. This PC's own copy; never committed |
+| `ops/nova.settings.example.ps1` | Tracked reference that `nova.settings.ps1` is created from. New settings and defaults go here, by PR |
+| `ops/Nova.ps1` | Every command in section 3 |
+| `ops/console/nova_console.py` | The standalone status page (stdlib only), and `/api/releases` for the Pi |
+| `releases/<tag>/` | What a release pinned (`release.json`) and the config it was tested with |
+| `prod\backend\scripts\prod_windows.ps1` | Foreground prod launcher, for debugging |
+| `prod\backend\scripts\dev_windows.ps1` | Foreground dev launcher, hot reload |
+| `C:\Nova\config\<env>\` | Live station config, edited from the web interface |
+| `C:\Nova\config\history\` | Every config ever used (`snapshots\<hash>.yaml`) and `history.jsonl` |
+| `C:\Nova\data\<env>\` | Raw recordings and their `.meta.json` |
+| `C:\Nova\archive\<env>\<recording>\` | Self-contained recording bundles (data + config + meta) |
+| `C:\Nova\state\prod.json` | Which release prod is running |
+| `C:\Nova\releases.json` | Generated release index served by the console - do not hand-edit |
 | `C:\Nova\console.json` | Generated console config - do not hand-edit |
 | `C:\Nova\logs\` | All Windows service logs |
 | `C:\Nova\bin\` | WinSW plus the per-service shims |
@@ -286,8 +456,8 @@ On the Pi:
 | Path | What it is |
 |---|---|
 | `/etc/nova/novaGround.env` | **Single source of truth** for the Pi |
-| `nova-pi.sh` | Install/build/start/stop/restart/update/status/logs/doctor |
+| `/etc/nova/deployed` | Which release prod is running, written by `nova-pi.sh deploy` |
+| `nova-pi.sh` | Install/build/start/stop/restart/update/deploy/status/logs/doctor |
 | `start.sh` | Service entry point (systemd calls this) |
 | `run.sh` | Interactive tmux session, for bench work |
 | `novaGround.service` | The systemd unit, installed by `nova-pi.sh install` |
-

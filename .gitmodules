@@ -1,15 +1,15 @@
 [submodule "pi/novaGround"]
 	path = pi/novaGround
 	url = https://github.com/UTATRocketry/novaGround.git
-	branch = code_refactoring
-[submodule "prod/novaOps-back"]
-	path = prod/novaOps-back
+	branch = main
+[submodule "prod/backend"]
+	path = prod/backend
 	url = https://github.com/UTATRocketry/novaOps-back.git
-	branch = fas_integration
-[submodule "prod/novaOPS-front"]
-	path = prod/novaOPS-front
+	branch = main
+[submodule "prod/frontend"]
+	path = prod/frontend
 	url = https://github.com/UTATRocketry/novaOPS-front.git
-	branch = fas_refactor
+	branch = main
 [submodule "firmware"]
 	path = firmware
 	url = https://github.com/UTATRocketry/Gigafloss-FAS-Firmware-and-Server.git
