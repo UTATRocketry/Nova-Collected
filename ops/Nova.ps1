@@ -518,7 +518,7 @@ function Get-ProcessesUsingPath {
 function Clear-PathLocks {
     param([string]$Path, [string]$Label)
 
-    $holders = Get-ProcessesUsingPath $Path
+    $holders = @(Get-ProcessesUsingPath $Path)
     if ($holders.Count -eq 0) { return }
 
     Write-Warn "$($holders.Count) process(es) are running out of $Label and will lock its files:"
@@ -898,7 +898,7 @@ function Invoke-Status {
 }
 
 function Invoke-Logs {
-    $defs = Get-NovaServiceDefs $Env
+    $defs = @(Get-NovaServiceDefs $Env)
     if ($defs.Count -eq 0) { throw "No components selected." }
     if ($defs.Count -gt 1) {
         Write-Warn "Multiple components selected; showing the first. Use -Only <component> to pick one."
