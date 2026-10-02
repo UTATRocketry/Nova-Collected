@@ -10,7 +10,7 @@ together.
 > This software commands valves on a real engine. Read
 > [CONTRIBUTING.md](CONTRIBUTING.md) before your first change.
 
-![System overview](docs/assets/diagrams/png/system-overview.png)
+![System overview](docs/_assets/diagrams/system-overview.png)
 
 ## Repo structure
 
