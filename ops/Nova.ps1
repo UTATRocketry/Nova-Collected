@@ -1267,7 +1267,7 @@ function Assert-NovaRepo {
 
 function Get-PinParts {
     # Everything a release pins. Dev/Prod are this PC's checkouts; novaGround
-    # lives on the Pi and firmware is a reference owned by the FAS team.
+    # lives on the Pi and firmware is a reference only
     return @(
         [pscustomobject]@{ Path = 'prod/backend';       Label = 'novaOps backend';      Dev = $cfg.Environments.dev.BackendPath;  Prod = $cfg.Environments.prod.BackendPath }
         [pscustomobject]@{ Path = 'prod/frontend';      Label = 'novaOps frontend';     Dev = $cfg.Environments.dev.FrontendPath; Prod = $cfg.Environments.prod.FrontendPath }
@@ -1806,7 +1806,7 @@ function Invoke-Promote {
     # else is allowed; make sure whoever promotes it has seen that.
     $pins = Get-Prop $m 'pins'
     foreach ($p in @($pins.PSObject.Properties)) {
-        if ($p.Name -eq 'firmware') { continue }   # the FAS team's repo, not ours
+        if ($p.Name -eq 'firmware') { continue }
         $branch = [string](Get-Prop $p.Value 'branch')
         if ($branch -eq '(given by hand)') { Write-Warn "$($p.Name): commit was given by hand; its branch is unknown." }
         elseif (-not (Test-UsualBranch $branch)) { Write-Warn "$($p.Name) was pinned from '$branch', outside $(Get-UsualBranchText)." }
@@ -2122,7 +2122,7 @@ function Invoke-Publish {
                         $dir = if ($isHotfix) { $cfg.Pi.ProdDir } else { $cfg.Pi.DevDir }
                         "on the Pi: git -C $dir push -u origin $branch"
                     }
-                    'firmware'      { 'firmware comes from the FAS team - pin a commit that is on GitHub' }
+                    'firmware'      { 'firmware is developed separately - pin a commit that is on GitHub' }
                     default {
                         $part = Get-PinParts | Where-Object { $_.Path -eq $p.Name }
                         $dir = if ($isHotfix) { $part.Prod } else { $part.Dev }
@@ -2171,8 +2171,8 @@ function Invoke-Publish {
     # 5. Tag every pinned commit in its own repo as nova/<tag>. Feature and
     #    hotfix branches are deleted after merging; without a tag, a squash-
     #    merged or deleted branch's commit could eventually vanish from GitHub,
-    #    and that release could never be checked out again. Firmware belongs to
-    #    the FAS team, so it is not tagged.
+    #    and that release could never be checked out again. Firmware is developed
+    #    separately, so it is not tagged.
     Write-Step "Tagging pinned commits in the code repos (nova/<tag>)"
     foreach ($part in @(Get-PinParts | Where-Object { $_.Path -ne 'firmware' })) {
         $base = Get-GitHubBase $part.Path

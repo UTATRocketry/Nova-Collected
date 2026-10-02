@@ -5,7 +5,12 @@ These rules apply to the Nova code repos: [novaOps-back], [novaOPS-front] and
 described in section 10. The firmware repo belongs to the FAS
 team and follows their rules.
 
-If anything here is unclear, ask in the software channel before guessing.
+> [!IMPORTANT]
+> This software commands valves on a real engine. If anything here is unclear,
+> ask in the software channel before guessing.
+
+Also read [organization.md](docs/development/organization.md) (where code goes)
+and [style.md](docs/development/style.md) (how it's formatted).
 
 [novaOps-back]: https://github.com/UTATRocketry/novaOps-back
 [novaOPS-front]: https://github.com/UTATRocketry/novaOPS-front
@@ -63,14 +68,15 @@ Reading it left to right:
 
 ## 2. The three rules
 
-1. **Never commit directly to `main` or `dev`.** Always work on a supporting
-   branch and open a pull request (PR).
-2. **Your PRs go into `dev`.** Only leads merge into `main`, and normally only
-   code that passed a hardware test.
-3. **Prod runs releases, not branches.** Code reaches prod when a lead runs
-   `Nova.ps1` on the ground station. The only code edited on the ground
-   station is an emergency fix made by a lead during a test, and it must be
-   turned into a hotfix with `Nova.ps1 hotfix` the same day (section 5).
+> [!IMPORTANT]
+> 1. **Never commit directly to `main` or `dev`.** Always work on a supporting
+>    branch and open a pull request (PR).
+> 2. **Your PRs go into `dev`.** Only leads merge into `main`, and normally
+>    only code that passed a hardware test.
+> 3. **Prod runs releases, not branches.** Code reaches prod when a lead runs
+>    `Nova.ps1` on the ground station. The only code edited on the ground
+>    station is an emergency fix made by a lead during a test, and it must be
+>    turned into a hotfix with `Nova.ps1 hotfix` the same day (section 5).
 
 ---
 
@@ -112,11 +118,13 @@ spec:
 ## 4. Making a change (everyone)
 
 **Where to work:** in the code repo's clone under the `dev\` folder of your
-Nova-Collected clone, e.g. `Nova\dev\backend`. The README's "Getting
-started as a developer" sets these up. Never work in `prod\` or `pi\`: those
-are submodules that show the released version, and they're overwritten
-whenever it changes. In GitHub Desktop, add each `dev\` clone with
-**File → Add local repository**.
+Nova-Collected clone, e.g. `Nova\dev\backend`.
+[Getting started](docs/development/getting-started.md) sets these up. In GitHub
+Desktop, add each `dev\` clone with **File → Add local repository**.
+
+> [!WARNING]
+> Never work in `prod\` or `pi\`. Those submodules show the released version
+> and are overwritten whenever it changes.
 
 This is the normal loop. Steps are shown for **GitHub Desktop** and the
 **command line** (run from inside the `dev\` clone).
@@ -146,111 +154,35 @@ automatically.
 - [ ] Nothing that shouldn't be in git is committed: station
       config/calibrations, data files, passwords, `.env` files, build output.
 
-**Approval:**
-- **Into `dev`:** 1 approval from any team member.
-- **Changes that can move hardware** (actuator commands, safety rules,
-  interlocks, timeouts, sequencing) also need a lead's approval. Add the
-  `hardware-risk` label.
+**Approval:** into `dev`, 1 approval from any team member.
+
+> [!CAUTION]
+> **Changes that can move hardware** (actuator commands, safety rules,
+> interlocks, timeouts, sequencing) also need a lead's approval. Add the
+> `hardware-risk` label.
 
 ---
 
 ## 5. Getting code to prod (leads)
 
-Releases are made on the ground station with `ops/Nova.ps1`. The full commands
-are in [ops/README.md](ops/README.md#3-command-reference).
+Releases are made on the ground station with `ops/Nova.ps1`. The full guide,
+including hotfixes and rollbacks, is [RELEASING.md](RELEASING.md). In short:
 
-### Normal release
+| Step | Command | Result |
+|---|---|---|
+| Test | `get-changes -Ref dev`, then `use dev` | `dev` runs on the dev stack for the hardware test |
+| Record | `pin -Test "..."` | the tested commits and config become a release, e.g. `v2026.10.04` |
+| Approve | `promote v2026.10.04` | the release is stable; `publish` opens `release/v2026.10.04` PRs into `main` |
+| Deploy | `deploy` | prod runs the newest stable release |
 
-1. **Test.** Put `dev` on the dev stack and run the hardware test:
+Merge `release/*` and `hotfix/*` PRs into `main` with **Create a merge
+commit**. The `release/` branch sits at the commit that was actually tested,
+so `main` receives exactly that, even if `dev` has moved on.
 
-   ```powershell
-   .\ops\Nova.ps1 get-changes -Ref dev
-   .\ops\Nova.ps1 use dev
-   ```
-
-2. **Record it.** `pin` saves exactly which commits were tested, and with
-   what config, as a release such as `v2026.10.04`:
-
-   ```powershell
-   .\ops\Nova.ps1 pin -Test "integration test" -Notes "all valves cycled"
-   ```
-
-3. **Approve it for prod.** `promote` marks the release stable:
-
-   ```powershell
-   .\ops\Nova.ps1 promote v2026.10.04
-   ```
-
-   The next `publish` (when online) creates a `release/v2026.10.04` branch in
-   each code repo at the tested commit, and opens its PR into `main`. Merge
-   each with **Create a merge commit**.
-
-4. **Deploy it:**
-
-   ```powershell
-   .\ops\Nova.ps1 deploy
-   ```
-
-The `release/` branch matters because `dev` may have moved on since the test.
-The release branch sits at the commit that was actually tested, so `main`
-receives exactly that and nothing newer.
-
-### Hotfix: a fix to prod that can't wait for the next release
-
-A hotfix branch is always created from `main` (what prod runs), merged into
-`main`, then merged back into `dev` so the fix isn't lost. There are two ways
-to make one.
-
-**On-site hotfix: fixed and tested on prod during a test.** Sometimes the
-fastest safe fix is a small edit made right on the ground station, tested
-immediately on the prod stack with the real hardware. When that happens, don't
-leave the edit behind as a loose change. Capture it the same day:
-
-```powershell
-.\ops\Nova.ps1 hotfix -Name igniter-delay -Test "integration test, igniter re-run"
-```
-
-This:
-1. takes every prod checkout with local edits (on the PC, and on the Pi's
-   prod folder) and creates `hotfix/igniter-delay` there, from the release
-   prod was running;
-2. commits the edits on that branch;
-3. records the result as a new release, with the commits, config and test,
-   exactly as `pin` does for dev. The release is **stable straight away**,
-   since prod is already running it.
-
-The next `publish` pushes the hotfix branches and opens their PRs into `main`.
-Once those are merged, it opens the back-merge PRs from `main` into `dev`.
-(The Pi can't always reach GitHub, so if the Pi was edited, push its hotfix
-branch from the Pi; `hotfix` prints the command.)
-
-**Planned hotfix: fixed off-site.** Branch `hotfix/<name>` from `main` yourself
-and fix it like any other branch. Then test it on the dev stack
-(`get-changes -Ref hotfix/<name>`), `pin`, `promote`, PR into `main` and
-`deploy`. Merge `main` back into `dev` afterwards.
-
-### Rollback
-
-Every release stays deployable:
-
-```powershell
-.\ops\Nova.ps1 deploy v2026.09.20
-```
-
-This puts prod back on an earlier release immediately. If the rollback is
-permanent, fix `main` afterwards with a hotfix or a revert.
-
-### When the normal path doesn't fit
-
-The rules above are the normal path, not an absolute law. A lead may:
-
-- **pin a branch other than `dev`**, for example a single feature tested on
-  its own, or `main` re-tested;
-- **merge into `main` without a full hardware test**, for example a docs or
-  UI-only change.
-
-When you do, say why in the release notes or the PR, so the next person
-understands.
+**Hotfix:** a fix to prod that can't wait. Branch it from `main`, merge it into
+`main`, then back into `dev`. A fix made and tested on the ground station
+during a test is captured with `Nova.ps1 hotfix` the same day
+([RELEASING.md: Hotfixes](RELEASING.md#hotfixes)).
 
 ---
 
@@ -287,6 +219,11 @@ Examples:
 
 The commits inside your branch can be messy ("wip", "try again"), because they
 are squashed away. Clear messages still help your reviewer.
+
+> [!NOTE]
+> Your PR title is also your entry in the repo's `CHANGELOG.md`, which is
+> generated from these titles after each release ([RELEASING.md](RELEASING.md#changelog)).
+> Write it for someone reading the release history.
 
 ---
 
@@ -351,6 +288,9 @@ back into `dev`, so merging `dev` into `main` should never conflict.
 
 ## 9. Never
 
+> [!CAUTION]
+> These can break the ground station, lose a release, or leak a password.
+
 - Push directly to `main` or `dev`.
 - `git push --force` on a branch someone else uses.
 - Edit code in `C:\Nova\prod\` on the ground station or in the Pi's prod
@@ -361,7 +301,7 @@ back into `dev`, so merging `dev` into `main` should never conflict.
   `dev\` clones (section 4).
 - Commit passwords, tokens or keys. The real admin password goes in the
   ground station's own `ops\nova.settings.ps1`, which is never committed.
-- Commit to the firmware repo; it belongs to the FAS team.
+- Make changes in or commit to the firmware repo; it is for reference only.
 
 ---
 
@@ -411,6 +351,9 @@ repo is on; `use dev` only switches the stacks.
 `Nova.ps1` does, by committing straight to `main` on the ground station. CI
 rejects PRs that try.
 
+> [!IMPORTANT]
+> Never commit `ops\nova.settings.ps1`. It holds the real admin password.
+
 **Settings: the example and the real file.**
 - `ops/nova.settings.example.ps1` is tracked. It's the reference: the default
   value of every setting. Change a default, or add a new setting, through a PR
@@ -427,15 +370,5 @@ rejects PRs that try.
 
 ## Words used here
 
-| Word | Meaning |
-|---|---|
-| **branch** | a separate line of work in a repo |
-| **PR** (pull request) | a request to merge your branch, where others review it |
-| **merge** | bring one branch's changes into another |
-| **squash and merge** | merge a PR as a single commit |
-| **CI** | automatic checks GitHub runs on every PR |
-| **dev stack / prod stack** | the two copies of the software on the ground station PC |
-| **release** | a set of exact versions of all repos that was tested together, named by date, e.g. `v2026.10.04` |
-| **pin / promote / deploy** | record a tested release / approve it for prod / put it on prod |
-| **hotfix** | a fix to prod made from `main`; `Nova.ps1 hotfix` captures one made on-site |
-| **EGSE** | electrical ground support equipment: the ground-side hardware the software drives |
+Branch, PR, squash and merge, CI, dev and prod stack, release, pin, promote,
+deploy, hotfix: see the [glossary](docs/misc/glossary.md#contributing-terms).
