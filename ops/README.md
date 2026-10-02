@@ -25,7 +25,7 @@ ops\
 
 ### Set up
 
-Follow [docs/deployment/server-setup.md](server-setup.md).
+Follow [docs/deployment/server-setup.md](../docs/deployment/server-setup.md).
 In short, from an **elevated** PowerShell in `C:\Nova`:
 
 ```powershell
@@ -66,5 +66,5 @@ Most problems show up as one FAIL line. Symptoms and fixes are in
 | Look up any command or flag                        | [docs/deployment/commands.md](../docs/deployment/commands.md)                                                            |
 | Release, deploy or roll back                       | [RELEASING.md](../RELEASING.md)                                                                                          |
 | Follow a maintenance procedure                     | [docs/maintenance/](../docs/maintenance/README.md)                                                                       |
-| Find where the station keeps config, data and logs | [docs/deployment/server-layout.md](server-layout.md)                                                                     |
+| Find where the station keeps config, data and logs | [docs/deployment/server-layout.md](../docs/deployment/server-layout.md)                                                                     |
 | Change `Nova.ps1` itself                           | [AGENTS.md](../AGENTS.md) (coding conventions) and [CONTRIBUTING.md §10](../CONTRIBUTING.md#10-this-repo-nova-collected) |

@@ -105,7 +105,6 @@ $e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile("$PW
   | `> [!WARNING]` | Something that can break the station or lose data |
   | `> [!CAUTION]` | Something that can move hardware or hurt someone |
 
-- **Diagrams** are draw.io files in `docs/assets/diagrams/`, rendered to PNG by
-  `build_diagrams.py --png`. Commit the source and the PNG.
+- **Diagrams** are PNGs in `docs/_assets/diagrams/`, made with draw.io.
 - Never write a number or behaviour you haven't checked in the code. Write
   "unconfirmed" instead.

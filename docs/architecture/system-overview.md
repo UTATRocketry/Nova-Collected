@@ -22,7 +22,7 @@ and [RELEASING.md](../../RELEASING.md). The config model is in
 
 The dev stack runs the same services on ports 8001 / 3001 / 8081 and never
 starts on boot. Service names are in
-[server-layout.md](server-layout.md#services).
+[server-layout.md](../deployment/server-layout.md#services).
 
 ## Network
 

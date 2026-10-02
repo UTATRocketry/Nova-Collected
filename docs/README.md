@@ -29,7 +29,7 @@ What each folder is for, so new documents land in the right place.
 | `user-guides/` | For operators, not developers | [operator-guide.md](user-guides/operator-guide.md) |
 | `resources/` | Tools, external links, training | [tools.md](resources/tools.md) · [training-workshops.md](resources/training-workshops.md) |
 | `misc/` | Glossary and names | [glossary.md](misc/glossary.md) |
-| `assets/` | Images and diagrams used by the docs | `diagrams/*.drawio` (sources) and `diagrams/png/` |
+| `_assets/` | Images and diagrams used by the docs | `diagrams/` (draw.io exports) and `images/` |
 | `design/` | Design decisions and their rationale (ADRs). None yet; the release design is in [RELEASING.md](../RELEASING.md) | - |
 
 > [!NOTE]

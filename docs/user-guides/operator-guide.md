@@ -26,7 +26,7 @@ Every row should be green.
 
 More symptoms: [SUPPORT.md](../../SUPPORT.md#the-nova-console). Before a test,
 the software lead runs the full
-[health check](check-server-health.md).
+[health check](../maintenance/check-server-health.md).
 
 ## 2. Open the UI and take a role
 
