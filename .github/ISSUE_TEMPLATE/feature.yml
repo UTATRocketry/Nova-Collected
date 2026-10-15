@@ -1,0 +1,41 @@
+name: Feature
+description: A new capability or an improvement.
+labels: ["feature", "needs-triage"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What should be added or changed?
+    validations:
+      required: true
+  - type: textarea
+    id: timeline
+    attributes:
+      label: Timeline
+      description: When do you want this done by?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Checklist of what done looks like.
+      value: |
+        - [ ] 
+    validations:
+      required: true
+  - type: dropdown
+    id: repos
+    attributes:
+      label: Connected Repos
+      description: Where the change goes. A lead sets the Project's Repo field at triage.
+      multiple: true
+      options:
+        - Nova-Collected
+        - novaOps-back
+        - novaOPS-front
+        - novaGround
+        - Not sure
+    validations:
+      required: true

@@ -1,0 +1,61 @@
+name: Test anomaly
+description: Unexpected behaviour seen during a test.
+labels: ["test-anomaly", "needs-triage"]
+body:
+  - type: input
+    id: when
+    attributes:
+      label: Test date and location
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Release tag and config hash
+      description: Ties the anomaly to the exact software and config.
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened / expected
+    validations:
+      required: true
+  - type: input
+    id: data
+    attributes:
+      label: Recording / data link
+      description: Drive link to the recording.
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Safety
+        - Test aborted
+        - Degraded
+        - Cosmetic
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Operator notes
+    validations:
+      required: false
+  - type: dropdown
+    id: repos
+    attributes:
+      label: Connected Repos
+      description: Where the change goes. A lead sets the Project's Repo field at triage.
+      multiple: true
+      options:
+        - Nova-Collected
+        - novaOps-back
+        - novaOPS-front
+        - novaGround
+        - Not sure
+    validations:
+      required: false

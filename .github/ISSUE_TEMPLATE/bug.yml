@@ -1,0 +1,76 @@
+name: Bug
+description: Something doesn't work as documented.
+labels: ["bug", "needs-triage"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you saw, including error messages.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: dropdown
+    id: repos
+    attributes:
+      label: Connected Repos
+      description: Where the change goes. A lead sets the Project's Repo field at triage.
+      multiple: true
+      options:
+        - Nova-Collected
+        - novaOps-back
+        - novaOPS-front
+        - novaGround
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps, starting from a fresh start.
+      value: |
+        1. 
+        2. 
+        3. 
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      options:
+        - novaMock
+        - Bench
+        - Test stand
+        - Launch site
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Release tag or commit
+      description: From `Nova.ps1 status` or the UI.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / screenshots
+    validations:
+      required: false
+  - type: dropdown
+    id: safety
+    attributes:
+      label: Safety impact
+      options:
+        - No safety impact
+        - Could affect a test
+        - Could actuate hardware unexpectedly
+    validations:
+      required: true
