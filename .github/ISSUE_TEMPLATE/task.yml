@@ -1,0 +1,33 @@
+name: Task
+description: Maintenance, tooling, tests or other work that isn't a feature or a bug.
+labels: ["chore", "needs-triage"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What needs doing
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: Checklist.
+      value: |
+        - [ ] 
+    validations:
+      required: true
+  - type: dropdown
+    id: repos
+    attributes:
+      label: Connected Repos
+      description: Where the change goes. A lead sets the Project's Repo field at triage.
+      multiple: true
+      options:
+        - Nova-Collected
+        - novaOps-back
+        - novaOPS-front
+        - novaGround
+        - Not sure
+    validations:
+      required: true

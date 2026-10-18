@@ -1,0 +1,2 @@
+# Blank issues stay enabled for tracking issues (link their children as sub-issues).
+blank_issues_enabled: true

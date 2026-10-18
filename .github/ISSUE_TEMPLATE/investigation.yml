@@ -1,0 +1,40 @@
+name: Investigation
+description: A question to answer or a decision to make. Ends in a written answer and follow-up issues.
+labels: ["investigation", "needs-triage"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Topic/Question
+    validations:
+      required: true
+  - type: textarea
+    id: known
+    attributes:
+      label: What we know
+    validations:
+      required: false
+  - type: dropdown
+    id: repos
+    attributes:
+      label: Connected Repos
+      description: Where the change goes. A lead sets the Project's Repo field at triage.
+      multiple: true
+      options:
+        - Nova-Collected
+        - novaOps-back
+        - novaOPS-front
+        - novaGround
+        - Not sure
+    validations:
+      required: false
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: "Usually: answer written up and follow-up issues opened."
+      value: |
+        - [ ] Findings written up in this issue
+        - [ ] Follow-up issues opened
+    validations:
+      required: true
