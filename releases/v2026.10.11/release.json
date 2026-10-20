@@ -1,0 +1,49 @@
+{
+  "tag": "v2026.10.11",
+  "kind": "test",
+  "env": "dev",
+  "created": "2026-10-11T23:59:00.0000000",
+  "test": "cold flow test",
+  "notes": "Tested 2026-20-11; pinned late, code unchanged since. Tag and date corrected afterwards.",
+  "operator": "sys-adm@NOVA-SERVER",
+  "previous": null,
+  "pins": {
+    "prod/backend": {
+      "commit": "79e4dbb274d4e5bfbe2fd18feec1f3fac24fcbed",
+      "branch": "dev"
+    },
+    "prod/frontend": {
+      "commit": "b80a658e49bac7b751565fc65322f51e3647f180",
+      "branch": "dev"
+    },
+    "pi/novaGround": {
+      "commit": "86fc6397266dd7536a912bb85be2089a51090377",
+      "branch": "dev"
+    },
+    "firmware": {
+      "commit": "ae5b4fd9a0e77a24e86eb0b4d81b9d36c19645a5",
+      "branch": "(unchanged)"
+    }
+  },
+  "config": [
+    {
+      "file": "hybrid.yaml",
+      "hash": "a4b48ad14b5f09f8"
+    },
+    {
+      "file": "liquid.yaml",
+      "hash": "aaf40f387c947fc4"
+    },
+    {
+      "file": "system.yaml",
+      "hash": "f678a1920035dd5f"
+    }
+  ],
+  "recordings": [
+    "2026-10-02-12_data_0",
+    "2026-10-11-21_data_0",
+    "2026-10-11-22_data_0",
+    "2026-10-18-13_data_0",
+    "2026-10-18-17_data_0"
+  ]
+}
