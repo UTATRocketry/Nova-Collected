@@ -1,0 +1,67 @@
+# git-cliff config: builds CHANGELOG.md from this repo's history.
+# Run by .github/workflows/changelog.yml whenever a release tag is pushed.
+# Docs: https://git-cliff.org/docs/configuration
+
+[changelog]
+header = """
+# Changelog
+
+Every Nova release, newest first. A release is a set of commits of all the code
+repos that passed a hardware test together (see [RELEASING.md](RELEASING.md)).
+
+> [!NOTE]
+> This file is **generated** by [git-cliff](https://git-cliff.org) from this
+> repo's commit history, by the `changelog` GitHub Actions workflow, which opens
+> a PR after each release. Don't edit it by hand: change `cliff.toml` instead.
+
+Each release lists the changes to this repo (ops tooling and docs). What
+changed in the code itself is in each code repo's own `CHANGELOG.md`, and the
+release page links to the exact commits that were tested.
+"""
+body = """
+{% if version %}\
+## [{{ version }}](https://github.com/UTATRocketry/Nova-Collected/releases/tag/{{ version }}) - {{ timestamp | date(format="%Y-%m-%d") }}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}\
+{% if commit.breaking %}**BREAKING** {% endif %}\
+{{ commit.message | split(pat="\n") | first | trim }}\
+{% endfor %}
+{% endfor %}
+{% endif %}\
+"""
+footer = """
+## Before releases
+
+- This repo used to pin `daqhats` and ran the stack with `update.sh`, Docker
+  and tmux. daqhats is now installed by novaGround's `install.sh`, and the
+  stack runs as Windows services (`ops/Nova.ps1`) on the ops PC and systemd
+  (`nova-pi.sh`) on the Pi.
+- The backend and frontend submodules moved from `prod/novaOps-back` and
+  `prod/novaOPS-front` to `prod/backend` and `prod/frontend`.
+"""
+trim = false
+
+[git]
+conventional_commits = true
+# Keep the pin/hotfix commits Nova.ps1 makes (they aren't conventional), but
+# drop anything no parser below recognises.
+filter_unconventional = false
+filter_commits = true
+split_commits = false
+protect_breaking_commits = true
+# Only the release tags made by `Nova.ps1 pin` / `hotfix`.
+tag_pattern = "^v[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}(\\.[0-9]+)?$"
+sort_commits = "oldest"
+commit_parsers = [
+  # The changelog workflow's own PRs.
+  { message = "^docs\\(changelog\\)", skip = true },
+  { message = "^(Pin|Hotfix) v", group = "<!-- 0 -->Release" },
+  { message = "^feat", group = "<!-- 1 -->Features" },
+  { message = "^fix", group = "<!-- 2 -->Fixes" },
+  { message = "^refactor", group = "<!-- 3 -->Refactoring" },
+  { message = "^docs", group = "<!-- 4 -->Documentation" },
+  { message = "^test", group = "<!-- 5 -->Tests" },
+  { message = "^chore", group = "<!-- 6 -->Chores" },
+]
