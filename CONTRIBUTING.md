@@ -87,7 +87,7 @@ Reading it left to right:
 | | `main` | `dev` |
 |---|---|---|
 | Purpose | Production: what the prod stack runs | Integration: finished work waiting for a hardware test |
-| Changes come from | `dev` (a release) or `hotfix/*` | `feature/*`, `bugfix/*`, `chore/*`, and hotfixes merged back |
+| Changes come from | `dev` (a release) or `hotfix/*` | `feature/*`, `bugfix/*`, `chore/*`, `tests/*`, and hotfixes merged back |
 | Merged by | leads | anyone, once the PR is approved |
 | Merge button | **Create a merge commit** | **Squash and merge** |
 | Must always | match what prod runs | build and pass CI |
@@ -101,7 +101,8 @@ spec:
 |---|---|---|---|---|
 | `feature/` | new capability | `dev` | `dev` | `feature/thermocouple-page` |
 | `bugfix/` | a bug fix | `dev` | `dev` | `bugfix/fas-port-reconnect` |
-| `chore/` | docs, tests, CI, dependencies, clean-up | `dev` | `dev` | `chore/update-readme` |
+| `chore/` | docs, CI, dependencies, clean-up | `dev` | `dev` | `chore/update-readme` |
+| `tests/` | adding or fixing tests | `dev` | `dev` | `tests/valve-timeout-cases` |
 | `hotfix/` | urgent fix to prod | `main` | `main`, then `dev` | `hotfix/igniter-delay` |
 | `release/` | a tested version on its way to `main` (made by `Nova.ps1`) | a tested commit on `dev` | `main` | `release/v2026.10.04` |
 

@@ -45,7 +45,7 @@ Code repos, run inside their `dev/` clones:
 4. **Never commit to `dev` or `main` directly in any repo.** Work goes on a
    supporting branch and through a PR (CONTRIBUTING.md §3-§4).
 5. **Branch names follow Conventional Branch** (`feature/`, `bugfix/`,
-   `chore/`, `hotfix/`, `release/`; lowercase words joined by single hyphens).
+   `chore/`, `tests/`, `hotfix/`, `release/`; lowercase words joined by single hyphens).
    **PR titles follow Conventional Commits** (`type(scope): description`).
    CI enforces both.
 6. **Never commit `ops/nova.settings.ps1`.** It's each machine's own copy and
