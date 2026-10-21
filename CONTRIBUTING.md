@@ -109,7 +109,6 @@ spec:
 **Naming rules:**
 
 - Use lowercase letters, numbers and hyphens: `feature/valve-timeout`.
-- Put the issue number in if there is one: `feature/issue-42-valve-timeout`.
 - No spaces, capitals, underscores, or double, leading or trailing hyphens.
 - Dots only in release versions: `release/v2026.10.04`.
 - Keep it short and descriptive. Not `feature/stuff` or `amelia-branch`.
