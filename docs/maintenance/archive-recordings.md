@@ -21,11 +21,6 @@ metadata together) that can be understood without the station.
 3. Check the bundles in `C:\Nova\archive\<env>\<recording>\`. Each has `data\`,
    `config\`, `meta.json` and, written last, `bundle.json`.
 
-   > [!WARNING]
-   > `archive` currently misses novaGround's files. Copy
-   > `C:\Nova\data\<env>\novaGround_<recording>_*.csv` into the bundle's
-   > `data\` folder by hand ([known issue](../../SUPPORT.md#known-issues)).
-
 > [!IMPORTANT]
 > A bundle without `bundle.json` is incomplete (the archive was interrupted).
 > Run `archive` again.

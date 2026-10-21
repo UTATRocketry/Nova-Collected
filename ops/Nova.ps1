@@ -2323,7 +2323,9 @@ function Invoke-Archive {
             # novaGround uploads its CSVs just after the stop; give them a minute.
             if (([DateTime]::UtcNow - ([datetime]$stopped).ToUniversalTime()).TotalSeconds -lt 60) { $waiting++; continue }
 
-            $pattern = '^' + [regex]::Escape($name) + '(\.|_[A-Za-z])'
+            # [<logger>_]<name>[_<word>].<ext>: novaGround_<name>_sensors.csv, FAS_<name>.csv.
+            # A recording name starts with a digit, so the word prefix can't swallow another recording's files.
+            $pattern = '^([A-Za-z][A-Za-z0-9]*_)?' + [regex]::Escape($name) + '(\.|_[A-Za-z])'
             $files = @($all | Where-Object { $_.Name -match $pattern -and $_.Name -ne $mf.Name })
             $bundle = Join-Path $cfg.ArchiveDir "$envName\$name"
             if (Test-Path (Join-Path $bundle 'bundle.json')) {
