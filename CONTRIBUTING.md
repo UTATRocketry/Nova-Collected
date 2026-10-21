@@ -154,12 +154,16 @@ automatically.
 - [ ] Nothing that shouldn't be in git is committed: station
       config/calibrations, data files, passwords, `.env` files, build output.
 
-**Approval:** into `dev`, 1 approval from any team member.
+**Approval:** into `dev`, 1 approval from a member of the
+[Software Elevated Privileges](https://github.com/orgs/UTATRocketry/teams/software-elevated-privileges)
+team, the default code owner in every repo (`.github/CODEOWNERS`).
 
 > [!CAUTION]
 > **Changes that can move hardware** (actuator commands, safety rules,
-> interlocks, timeouts, sequencing) also need a lead's approval. Add the
-> `hardware-risk` label.
+> interlocks, timeouts, sequencing) and **orchestration** (`ops/`, deploy
+> and start-up scripts, release pins, CI) need @Awesome-Ace22's approval.
+> CODEOWNERS requests it for the paths it lists. Add the `hardware-risk`
+> label for hardware changes.
 
 ---
 
@@ -175,8 +179,9 @@ including hotfixes and rollbacks, is [RELEASING.md](RELEASING.md). In short:
 | Approve | `promote v2026.10.04` | the release is stable; `publish` opens `release/v2026.10.04` PRs into `main` |
 | Deploy | `deploy` | prod runs the newest stable release |
 
-Merge `release/*` and `hotfix/*` PRs into `main` with **Create a merge
-commit**. The `release/` branch sits at the commit that was actually tested,
+Every PR into `main` in a code repo asks @Awesome-Ace22 for a review
+(the `release-review` workflow). Merge `release/*` and `hotfix/*` PRs into
+`main` with **Create a merge commit**. The `release/` branch sits at the commit that was actually tested,
 so `main` receives exactly that, even if `dev` has moved on.
 
 **Hotfix:** a fix to prod that can't wait. Branch it from `main`, merge it into
