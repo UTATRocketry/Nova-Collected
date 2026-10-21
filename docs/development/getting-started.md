@@ -67,6 +67,9 @@ says how far beyond that a change must be tested; the hands-on part is the
 
 ### Work on a change
 
+Picking up an issue from the board? Follow
+[working-on-an-issue.md](working-on-an-issue.md) from start to finish.
+
 ```bash
 cd dev/backend
 git switch dev && git pull

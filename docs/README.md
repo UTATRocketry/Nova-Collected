@@ -10,6 +10,7 @@ test? Start with [user-guides/operator-guide.md](user-guides/operator-guide.md).
 |---|---|
 | Understand how Nova works | [architecture/system-overview.md](architecture/system-overview.md) |
 | Set up my laptop and make a change | [development/getting-started.md](development/getting-started.md), then [CONTRIBUTING.md](../CONTRIBUTING.md) |
+| Pick up an issue and see it through to a merged PR | [development/working-on-an-issue.md](development/working-on-an-issue.md) |
 | Run a test as operator | [user-guides/operator-guide.md](user-guides/operator-guide.md) |
 | Set up a station machine | [deployment/](deployment/README.md) |
 | Release, deploy or roll back | [RELEASING.md](../RELEASING.md) |
@@ -24,7 +25,7 @@ What each folder is for, so new documents land in the right place.
 | `api/` | Contracts between components: REST, WebSocket, MQTT | [backend-api.md](api/backend-api.md) · [mqtt-topics.md](api/mqtt-topics.md) |
 | `architecture/` | How the system is built and what its data looks like | [system-overview.md](architecture/system-overview.md) · [configs.md](architecture/configs.md) |
 | `deployment/` | Setting up station machines, and the reference for running them | [README.md](deployment/README.md) (index of 6 guides) |
-| `development/` | Working on the code: setup, organization, style, testing | [getting-started.md](development/getting-started.md) · [organization.md](development/organization.md) · [style.md](development/style.md) · [testing-procedure.md](development/testing-procedure.md) |
+| `development/` | Working on the code: setup, organization, style, testing | [getting-started.md](development/getting-started.md) · [working-on-an-issue.md](development/working-on-an-issue.md) · [organization.md](development/organization.md) · [style.md](development/style.md) · [testing-procedure.md](development/testing-procedure.md) |
 | `maintenance/` | Step-by-step procedures, one per file | [README.md](maintenance/README.md) (index of procedures) |
 | `user-guides/` | For operators, not developers | [operator-guide.md](user-guides/operator-guide.md) |
 | `resources/` | Tools, external links, training | [tools.md](resources/tools.md) · [training-workshops.md](resources/training-workshops.md) |
