@@ -198,21 +198,21 @@ Starting data saving (`POST /api/flags/data-saving`) makes the backend:
 3. tell the loggers to start.
 
 A config change during the recording is appended to the same file; stopping
-adds the stop time. The loggers write raw values into the same folder:
+adds the stop time. The loggers write raw values into the same folder. Every
+logger names its files `<logger>_<name>[_<word>].csv`, so a file's source is
+clear from its name:
 
 | Logger | Files |
 |---|---|
-| FAS bridge | `<name>.csv` |
+| FAS bridge | `FAS_<name>.csv` |
 | novaGround | `<build ID>_<name>_sensors.csv`, `<build ID>_<name>_actuators.csv`, e.g. `novaGround_<name>_sensors.csv` (uploaded to the backend on stop) |
 
 `Nova.ps1 archive` (also run by `pin`) turns each finished recording into a
 self-contained bundle that can be understood without the station:
 
-> [!WARNING]
-> **Known issue:** `archive` collects files whose names *start with* the
-> recording name, so it misses novaGround's `novaGround_<name>_*.csv` files.
-> Until that's fixed, copy them into the bundle's `data\` folder by hand
-> ([SUPPORT.md](../../SUPPORT.md#known-issues)).
+`archive` collects `[<logger>_]<name>[_<word>].<ext>`: the recording name
+with an optional logger prefix. Recording `a_data_1` never claims
+`a_data_10`'s files.
 
 ```
 C:\Nova\archive\<env>\<recording>\

@@ -102,7 +102,6 @@ the repo it belongs to; link the issue here when you open it.
 
 | Where | Issue |
 |---|---|
-| `Nova.ps1 archive` | Recording bundles miss novaGround's CSVs. novaGround names them `novaGround_<name>_sensors.csv`, but `archive` (and the backend's `recording_files`) only match files that start with `<name>`. The files are still in `C:\Nova\data\<env>\`; copy them into the bundle by hand |
 | Backend `convert.method` | `zero_offset` and `polynomial` are accepted but behave as `linear` ([configs.md](docs/architecture/configs.md#sensors)) |
 | Backend `app/routers/lock.py` | Defines `/api/lock/lock` but isn't registered in `main.py`. Use `/api/flags/lockout` |
 | novaGround `start.sh` | If `NOVA_FAS_PORT` is set in `/etc/nova/novaGround.env` and that device exists, `start.sh` passes `--fas-port`, which `main.cpp` rejects ("Unknown option"), so the service exits and systemd restarts it in a loop. **Leave `NOVA_FAS_PORT` empty.** The FAS link runs in the backend's FAS bridge, not novaGround |
