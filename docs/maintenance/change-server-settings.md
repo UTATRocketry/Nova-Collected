@@ -19,7 +19,7 @@ Change a port, an IP address, the FAS COM port or the admin password.
    | Setting | Where in the file |
    |---|---|
    | FAS COM port | `Environments.prod.FasPort` |
-   | Admin password | `Environments.<env>.AdminPassword` |
+   | Admin password | `Environments.<env>.AdminPassword`. Prod's is also the Nova Console's password for actions; reinstalling prod updates both |
    | Ports | `Environments.<env>.BackendPort`, `FrontendPort`, `ConsolePort` |
    | Pi addresses | `Hosts` |
 
@@ -43,23 +43,26 @@ Change a port, an IP address, the FAS COM port or the admin password.
 
 ## Raspberry Pi
 
-1. Edit the Pi's settings:
+The Pis get the server's address, the broker port and each environment's
+backend port from `nova.settings.ps1`. After changing those, push them to every
+Pi by switching to the live stack again:
 
-   ```bash
-   sudo nano /etc/nova/novaGround.env
-   ```
+```powershell
+.\ops\Nova.ps1 use prod
+```
 
-2. Restart the service:
+That rewrites each Pi's `/etc/nova/novaGround-prod.env` and `-dev.env`, and
+restarts novaGround if its settings changed. Don't edit those files on the Pi:
+the next `use`, `deploy` or `get-changes` overwrites them.
 
-   ```bash
-   sudo systemctl restart novaGround
-   ```
+What's set on the Pi itself is which Pi it is and which binary it runs:
 
-3. Check: `sudo ./nova-pi.sh doctor`.
+```bash
+sudo ./nova-pi.sh install --name NovaThermo --target novaThermo
+```
 
-> [!CAUTION]
-> Leave `NOVA_FAS_PORT` empty on the Pi. See
-> [SUPPORT.md: Known issues](../../SUPPORT.md#known-issues).
+Extra binary flags (`--verbosity 2`, `--publish-ms 100`) go in `NOVA_EXTRA_ARGS`
+in `/etc/nova/pi.env`; then run `sudo ./nova-pi.sh restart`.
 
 ## Sensor and actuator config
 

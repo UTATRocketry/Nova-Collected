@@ -39,9 +39,16 @@ Where to get help with Nova, and how to fix the problems people hit most.
 | All rows green | Everything is up | Open the novaOps UI |
 | A row is **amber** | Running but not answering yet | Wait 15 s. If it stays amber, press **Restart** on that row |
 | A row is **red** | Stopped or crashed | Press **Start**. If it goes red again, expand **logs** on that row |
-| **novaGround** red under Remote hosts | The Pi is off, unplugged or still booting | Check its power and ethernet cable |
+| A Pi red under **Remote hosts** | Its flags say why. "NO REPLY": it's off, unplugged or still booting | Follow **Next steps** in the console; for "NO REPLY", check its power and ethernet cable |
+| A Pi's data files never reach the backend | It's on the wrong stack or port, or its backend doesn't answer from the Pi | The console shows which. `.\ops\Nova.ps1 use <live stack>` rewrites its settings; on the Pi, `./nova-pi.sh status` and look for `UPLOAD FAILED` in the log |
+| `use`/`deploy`: "was not updated: it still has the old novaGround.service" | The Pi hasn't been moved to `novaGround@prod`/`@dev` | On the Pi: `sudo /home/admin/dev/novaGround/nova-pi.sh install` ([setup](docs/deployment/novaground-setup.md)) |
 | Everything red, including the broker | Mosquitto isn't running, so the stack never started | `Start-Service mosquitto` |
 | The console page itself doesn't load | The console service is stopped | `.\ops\Nova.ps1 start -Only console` |
+| The console's buttons only copy commands | The runner task isn't set up (or the console runs `--read-only`) | Once, elevated: `.\ops\Nova.ps1 console-runner` |
+| A console action fails on SSH or `gh` | The runner runs as the account that ran `console-runner`, which needs the Pi SSH key and the GitHub login | Run Doctor from the console; log in as that account and fix SSH or `gh auth login`. Re-run `console-runner` after a password change |
+| A console action says "needs the admin password" or "wrong password" | Anything that changes state asks for prod's `AdminPassword` from `nova.settings.ps1`. Status, Doctor and a Publish dry run don't | Use prod's admin password. Five wrong tries lock that computer out for 2 minutes |
+| The console refuses every action except Status, Doctor and a dry run | Its `console.json` has no password hash yet (written before this existed) | `.\ops\Nova.ps1 install -Env prod -Only console`, then start the console |
+| A console action stays "queued" | The runner task didn't start | Task Scheduler, `\Nova\Console Runner`: check its last result. Run it by hand there to retry |
 
 ### Services
 
@@ -54,7 +61,8 @@ Where to get help with Nova, and how to fix the problems people hit most.
 | A service won't stay up | Run it in the foreground to see the error: [procedure](docs/maintenance/run-a-service-in-the-foreground.md) |
 
 Logs are in `C:\Nova\logs\<service>.out.log` and `.err.log` (or the **logs**
-expander in the console). On the Pi: `journalctl -u novaGround -f`.
+expander in the console). On the Pi: `journalctl -u novaGround@prod -f` (or
+`@dev`).
 
 ### In the operator UI
 
@@ -73,7 +81,7 @@ expander in the console). On the Pi: `journalctl -u novaGround -f`.
 | `pin`: "has uncommitted changes" | Commit (and push) the tested code, then pin again |
 | `pin`: "not on dev, main, hotfix/* or release/*" | A feature branch was tested. Fine for a one-off; say why in `-Notes` |
 | `pin`: "local 'dev' has commits that are not on origin/dev" | Someone committed on the ops PC. Move the commit to a branch and PR it |
-| `pin`: "Could not read the Pi's dev commit" | SSH to the Pi failed. Fix it, or pass `-GroundCommit` / `-SkipPi` |
+| `pin`: "Could not read NovaGround's dev commit" | SSH to the Pi failed. Fix it, or pass `-GroundCommit` / `-SkipPi` |
 | `deploy`: "has local changes to tracked files" | Something was edited in `prod\`. A tested emergency fix: capture it with `hotfix` ([RELEASING.md](RELEASING.md#on-site-hotfix)). Otherwise stash or discard it |
 | `publish`: "not on GitHub yet" | Run the printed `git push`, then publish again |
 | `git status` shows `prod/*` modified | Normal when prod isn't on the newest pin. `Nova.ps1 status` shows what prod runs |
@@ -105,7 +113,7 @@ the repo it belongs to; link the issue here when you open it.
 | `Nova.ps1 archive` | Recording bundles miss novaGround's CSVs. novaGround names them `novaGround_<name>_sensors.csv`, but `archive` (and the backend's `recording_files`) only match files that start with `<name>`. The files are still in `C:\Nova\data\<env>\`; copy them into the bundle by hand |
 | Backend `convert.method` | `zero_offset` and `polynomial` are accepted but behave as `linear` ([configs.md](docs/architecture/configs.md#sensors)) |
 | Backend `app/routers/lock.py` | Defines `/api/lock/lock` but isn't registered in `main.py`. Use `/api/flags/lockout` |
-| novaGround `start.sh` | If `NOVA_FAS_PORT` is set in `/etc/nova/novaGround.env` and that device exists, `start.sh` passes `--fas-port`, which `main.cpp` rejects ("Unknown option"), so the service exits and systemd restarts it in a loop. **Leave `NOVA_FAS_PORT` empty.** The FAS link runs in the backend's FAS bridge, not novaGround |
+| novaGround `start.sh` (before `novaGround@`) | On a Pi still on the old `novaGround.service`: if `NOVA_FAS_PORT` is set in `/etc/nova/novaGround.env` and that device exists, `start.sh` passes `--fas-port`, which `main.cpp` rejects ("Unknown option"), so the service exits and systemd restarts it in a loop. **Leave `NOVA_FAS_PORT` empty.** The new `start.sh` doesn't read it. The FAS link runs in the backend's FAS bridge, not novaGround |
 | Backend `Dockerfile`, `docker-compose.yml`, `initial_config.sh` | Left from the old Docker/Pi setup; prod runs as Windows services |
 | `ops/operator/Setup-OperatorLaptop.ps1` | Referenced by earlier docs, not in the repo yet |
 | [testing-procedure.md](docs/development/testing-procedure.md) | Not written yet |

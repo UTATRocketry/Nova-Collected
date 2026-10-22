@@ -9,7 +9,8 @@ deploy. Takes about two minutes.
    40 seconds: every service starts on its own.
 2. **Open the Nova Console**: `http://localhost:8080` on the ops PC, or
    `http://192.168.137.1:8080` from the operator laptop.
-3. **Check every row is green**, including novaGround under **Remote hosts**.
+3. **Check every row is green**, including both Pis under **Remote hosts**.
+   **Next steps** lists anything that isn't, with the command that fixes it.
    If one isn't, see [SUPPORT.md](../../SUPPORT.md#the-nova-console).
 4. **Check the release.** On the ops PC:
 

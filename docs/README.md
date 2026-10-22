@@ -31,7 +31,7 @@ What each folder is for, so new documents land in the right place.
 | `resources/` | Tools, external links, training | [tools.md](resources/tools.md) · [training-workshops.md](resources/training-workshops.md) |
 | `misc/` | Glossary and names | [glossary.md](misc/glossary.md) |
 | `_assets/` | Images and diagrams used by the docs | `diagrams/` (draw.io exports) and `images/` |
-| `design/` | Design decisions and their rationale (ADRs). None yet; the release design is in [RELEASING.md](../RELEASING.md) | - |
+| `design/` | Design decisions and their rationale. The release design is in [RELEASING.md](../RELEASING.md) | [pi-orchestration.md](design/pi-orchestration.md) |
 
 > [!NOTE]
 > A folder gets a `README.md` index only once it has enough files to need one.

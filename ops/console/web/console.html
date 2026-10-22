@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nova Console</title>
+<link rel="stylesheet" href="/web/console.css">
+</head>
+<body>
+<header>
+  <h1>Nova Console</h1>
+  <span class="env-tag" id="server"></span>
+  <span class="clock" id="clock">connecting…</span>
+</header>
+<div class="live none" id="live">
+  <span id="live-text">Checking…</span><span class="version" id="live-version"></span><span class="busy" id="live-busy"></span>
+</div>
+<main>
+  <section>
+    <h2>Quick links</h2>
+    <div class="row links" id="links"></div>
+  </section>
+
+  <section id="quick">
+    <h2>Quick actions</h2>
+    <div class="quick">
+      <span class="seg" id="stack-switch">
+        <button class="prod" data-env="prod">Prod</button>
+        <button class="dev" data-env="dev">Dev</button>
+      </span>
+      <button class="big" data-run="status">Status</button>
+      <button class="big" data-run="doctor">Doctor</button>
+      <button class="big" data-run="archive">Archive</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Broker</h2>
+    <div id="broker"></div>
+  </section>
+
+  <section>
+    <h2>Services</h2>
+    <div id="services"></div>
+  </section>
+
+  <section>
+    <h2>Remote hosts</h2>
+    <div id="pis"></div>
+  </section>
+
+  <section>
+    <h2>Releases</h2>
+    <div id="releases"></div>
+  </section>
+
+  <section>
+    <h2>Next steps</h2>
+    <div id="next"></div>
+  </section>
+
+  <section id="activity">
+    <h2>Activity</h2>
+    <div class="row">
+      <div style="width:100%">
+        <div class="job-head"><span class="mono" id="job-title">No actions yet.</span><span id="job-badge"></span>
+          <span class="spacer"></span><span class="hint" id="job-when" style="margin:0"></span></div>
+        <pre id="job-log" style="display:none"></pre>
+        <div class="history" id="history"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="actions">
+    <h2>Actions</h2>
+    <div id="runner-notice"></div>
+    <div class="cards" id="cards"></div>
+    <details class="advanced">
+      <summary>Advanced</summary>
+      <div class="cards" id="cards-advanced"></div>
+    </details>
+  </section>
+
+  <section>
+    <h2>Commands to copy</h2>
+    <div id="commands"></div>
+  </section>
+</main>
+
+<div class="modal-back" id="modal-back">
+  <div class="modal" role="dialog" aria-modal="true">
+    <h3 id="modal-title">Run?</h3>
+    <div class="cmd"><code id="modal-cmd"></code></div>
+    <div class="warn" id="modal-warn"></div>
+    <label class="field" id="modal-pw-wrap">Admin password
+      <input type="password" id="modal-pw" autocomplete="current-password"></label>
+    <div class="note" id="modal-note"></div>
+    <div class="buttons"><button id="modal-cancel">Cancel</button><button class="primary" id="modal-ok">Run</button></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script src="/web/console.js"></script>
+</body>
+</html>

@@ -18,6 +18,9 @@ touches it.
 | `C:\Nova\data\<env>\` | Raw recordings and their `.meta.json` |
 | `C:\Nova\archive\<env>\<recording>\` | Self-contained recording bundles (data + config + meta) |
 | `C:\Nova\state\prod.json` | Which release prod is running |
+| `C:\Nova\state\pis.json` | Each Pi's latest report to the console |
+| `C:\Nova\state\console-jobs\` | Actions started from the console: `<id>.json`, and their output in `<id>.log` |
+| Task Scheduler `\Nova\Console Runner` | Runs the console's actions as the station account (`Nova.ps1 console-runner`) |
 | `C:\Nova\logs\` | Every service's `.out.log` and `.err.log` |
 | `C:\Nova\bin\` | WinSW and the per-service wrappers |
 | `C:\Nova\releases.json` | Release index served by the console |
@@ -42,10 +45,14 @@ touches it.
 
 | Path | What it is |
 |---|---|
-| `/home/admin/prod/novaGround/` | What the service runs, at the deployed release |
-| `/home/admin/dev/novaGround/` | Dev checkout, for tests |
-| `/etc/nova/novaGround.env` | **The** settings file for the Pi |
+| `/home/admin/prod/novaGround/` | What `novaGround@prod` runs, at the deployed release |
+| `/home/admin/dev/novaGround/` | What `novaGround@dev` runs, for tests |
+| `/etc/nova/pi.env` | Which Pi this is and which binary it runs (`nova-pi.sh install`) |
+| `/etc/nova/novaGround-prod.env`, `-dev.env` | Each environment's broker, backend and console, written by `Nova.ps1`. Don't edit |
 | `/etc/nova/deployed` | Which release prod is running, written by `nova-pi.sh deploy` |
-| `novaGround.service` | The systemd unit, installed by `nova-pi.sh install` |
+| `/var/lib/nova/<env>/last_upload.json` | The last data-file upload's result |
+| `novaGround@.service` | The systemd unit: `novaGround@prod` (on boot) and `novaGround@dev` |
+| `nova-pi-report.timer` | Reports the Pi's state to the Nova Console every 15 s |
+| `/usr/local/lib/nova/nova-pi.sh` | The copy of `nova-pi.sh` the report timer runs |
 | `start.sh` | Service entry point (systemd calls it) |
 | `run.sh` | Interactive tmux session, for bench work |

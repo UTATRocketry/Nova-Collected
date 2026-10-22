@@ -22,7 +22,7 @@ Every row should be green.
 | All rows green | Go to step 2 |
 | A row is **amber** (running, not answering yet) | Wait 15 s. If it stays amber, press **Restart** on that row |
 | A row is **red** (stopped) | Press **Start**. If it goes red again, call the software lead |
-| **novaGround** red under Remote hosts | Check the Pi's power and ethernet cable |
+| A Pi red under **Remote hosts** | Read its flags: **Next steps** has the fix. "NO REPLY" means check the Pi's power and ethernet cable |
 
 More symptoms: [SUPPORT.md](../../SUPPORT.md#the-nova-console). Before a test,
 the software lead runs the full

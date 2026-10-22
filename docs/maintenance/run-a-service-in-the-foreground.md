@@ -39,28 +39,28 @@ to see its error.
 
 ## novaGround (Pi)
 
-1. Read the logs:
+1. Read the logs (`novaGround@dev` if dev is live):
 
    ```bash
-   journalctl -u novaGround -n 100
+   journalctl -u novaGround@prod -n 100
    ```
 
 2. Stop the service:
 
    ```bash
-   sudo systemctl stop novaGround
+   sudo ./nova-pi.sh stop
    ```
 
 3. Run it interactively. `run.sh` opens a tmux session, so it keeps running if
-   your SSH connection drops:
+   your SSH connection drops. It uses the same settings as the service:
 
    ```bash
-   cd /home/admin/prod/novaGround && ./run.sh
+   cd /home/admin/prod/novaGround && ./run.sh --env prod
    ```
 
    Add `--target novaMock` to run without hardware.
-4. Fix the cause, quit, and start the service again:
+4. Fix the cause, quit (`./run.sh --kill`), and start the service again:
 
    ```bash
-   sudo systemctl start novaGround
+   sudo ./nova-pi.sh use prod
    ```

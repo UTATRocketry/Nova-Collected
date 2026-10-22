@@ -1,8 +1,9 @@
 # Station network
 
 Every Nova machine is on one wired ethernet network with static addresses. The
-addresses are set in `ops\nova.settings.ps1` on the ops PC and
-`/etc/nova/novaGround.env` on the Pi.
+addresses are set in `ops\nova.settings.ps1` on the ops PC. `Nova.ps1` copies the
+server's address and ports to each Pi (`/etc/nova/novaGround-<env>.env`)
+whenever it switches stacks.
 
 | Host | Address | Runs |
 |---|---|---|
