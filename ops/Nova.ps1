@@ -2169,7 +2169,8 @@ elif git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
   git merge -q --ff-only '@{u}' || { echo "    $b can't fast-forward to its upstream (local commits?)"; exit 12; }
 fi
 echo "    now at $(git log -1 --format='%h %s') ($b)"
-./nova-pi.sh build --env dev || exit 13
+# Through bash: the pull may have rewritten nova-pi.sh without its executable bit.
+bash ./nova-pi.sh build --env dev || exit 13
 if systemctl is-active --quiet novaGround@dev.service; then
   sudo systemctl restart novaGround@dev.service && echo "    restarted novaGround@dev on the new build"
 fi
@@ -2668,7 +2669,8 @@ function Invoke-PiDeploy {
         # Run the Pi's dev copy of nova-pi.sh: that is the tooling that was just
         # tested, so it knows `deploy` (and the move to novaGround@) even when
         # prod's copy is older.
-        $r = Invoke-PiSsh -Pi $j.Pi -Command "sudo $($cfg.Pi.DevDir)/nova-pi.sh deploy $($j.Sha) --release $Tag" -Tty
+        # Through bash, in case a pull left it without its executable bit.
+        $r = Invoke-PiSsh -Pi $j.Pi -Command "sudo bash $($cfg.Pi.DevDir)/nova-pi.sh deploy $($j.Sha) --release $Tag" -Tty
         if ($r.Code -ne 0) {
             Write-Err "$($j.Pi.Name): the deploy did not complete (unreachable, or it failed above). By hand:"
             Write-Err "  ssh $($cfg.Pi.User)@$($j.Pi.Host)"
