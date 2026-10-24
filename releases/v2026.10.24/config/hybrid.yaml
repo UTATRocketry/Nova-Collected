@@ -1,0 +1,341 @@
+Sensors:
+- name: PGS
+  type: PT
+  unit: psi
+  range: [0.0, 1000.0]
+  binding:
+    source: GCS
+    hat_id: 0
+    channel_id: 0
+  convert:
+    calibration:
+    - [1.99, 0.0]
+    - [2.8442, 100.0]
+    - [3.6244, 200.0]
+    - [4.4452, 300.0]
+    - [5.2546, 400.0]
+    - [6.042, 500.0]
+    - [6.83, 600.0]
+    - [7.6098, 700.0]
+    - [8.4096, 800.0]
+    - [9.3034, 900.0]
+- name: PGSO
+  type: PT
+  unit: psi
+  range: [0.0, 1000.0]
+  binding:
+    source: GCS
+    hat_id: 0
+    channel_id: 1
+  convert:
+    calibration:
+    - [0.99, 0.0]
+    - [1.32, 100.0]
+    - [1.7, 200.0]
+    - [2.1, 300.0]
+    - [2.51, 400.0]
+    - [2.95, 510.0]
+    - [3.34, 600.0]
+    - [3.77, 700.0]
+    - [4.08, 775.0]
+- name: MOT
+  type: LC
+  unit: kg
+  range: [0.0, 20.0]
+  binding:
+    source: GCS
+    hat_id: 0
+    channel_id: 6
+  convert:
+    calibration:
+    - [1.9514, 0.0]
+    - [4.0598, 4.0]
+    - [6.1716, 8.0]
+- name: CC-LC
+  type: LC
+  unit: kg
+  range: [0.0, 500.0]
+  binding:
+    source: GCS
+    hat_id: 0
+    channel_id: 7
+  convert:
+    calibration:
+    - [1.925, 0.0]
+    - [1.995, 177.9]
+    - [2.06, 355.6]
+- name: PCC
+  type: PT
+  unit: psi
+  range: [0.0, 1000.0]
+  binding:
+    source: GCS
+    hat_id: 0
+    channel_id: 4
+  convert:
+    calibration:
+    - [2.02, 0.0]
+    - [2.22, 100.0]
+    - [2.41, 200.0]
+    - [2.54, 300.0]
+    - [2.7, 400.0]
+    - [2.87, 500.0]
+    - [3.02, 600.0]
+    - [3.18, 700.0]
+    - [3.34, 800.0]
+    - [3.52, 900.0]
+- name: POT
+  type: PT
+  unit: psi
+  range: [0.0, 1000.0]
+  binding:
+    source: GCS
+    hat_id: 0
+    channel_id: 2
+  convert:
+    calibration:
+    - [1.9846, 0.0]
+    - [5.0144, 300.0]
+    - [5.7896, 400.0]
+    - [6.5728, 500.0]
+    - [7.394, 600.0]
+    - [8.0556, 700.0]
+    - [8.806, 800.0]
+- name: PTU
+  type: PT
+  unit: psi
+  range: [0.0, 1000.0]
+  binding:
+    source: GCS
+    hat_id: 0
+    channel_id: 5
+  convert:
+    calibration:
+    - [1.99, 0.0]
+    - [5.01, 300.0]
+    - [5.79, 400.0]
+    - [6.57, 500.0]
+    - [7.39, 600.0]
+    - [8.06, 700.0]
+    - [8.81, 800.0]
+Actuators:
+- name: BVGSO
+  type: servo
+  binding:
+    target: GCS
+    relay_channel: 5
+    servo_channel: 2
+  actions:
+    position_aliases: [open, closed]
+    positions: [1100, 1950]
+    default_position: closed
+- name: BVGSP
+  type: servo
+  binding:
+    target: GCS
+    relay_channel: 4
+    servo_channel: 1
+  actions:
+    position_aliases: [open, closed]
+    positions: [850, 1800]
+    default_position: closed
+- name: BVGSD
+  type: servo
+  binding:
+    target: GCS
+    relay_channel: 2
+    servo_channel: 3
+  actions:
+    position_aliases: [open, closed]
+    positions: [900, 2100]
+    default_position: closed
+- name: SVBVGS
+  type: solenoid
+  binding:
+    target: GCS
+    relay_channel: 3
+  actions:
+    relay_type: nominally_off
+    solenoid_type: nominally_closed
+- name: MOV
+  type: solenoid
+  binding:
+    target: GCS
+    relay_channel: 9
+  actions:
+    relay_type: nominally_off
+    solenoid_type: nominally_closed
+- name: FL-Dump
+  type: solenoid
+  binding:
+    target: GCS
+    relay_channel: 10
+  actions:
+    relay_type: nominally_off
+    solenoid_type: nominally_closed
+- name: FL-Vent
+  type: solenoid
+  binding:
+    target: GCS
+    relay_channel: 13
+  actions:
+    relay_type: nominally_on
+    solenoid_type: nominally_open
+- name: FL-Fill
+  type: servo
+  binding:
+    target: GCS
+    relay_channel: 7
+    servo_channel: 0
+  actions:
+    position_aliases: [open, closed]
+    positions: [1950, 950]
+    default_position: closed
+safetyRules:
+  critical:
+  - SVOTV: ALL
+  - SVFTV: ALL
+  - SVGSD: ALL
+  hazardous:
+  - MFV: ALL
+Procedures:
+- name: Hotfire
+  steps: [Perform actuator and sensor checkouts, Verify all valves closed and all
+      sensors nominal, Complete low pressure leak checks, Complete high pressure leak
+      checks, Complete Ox fill, Pressurize Ox Tank and Fuel Tank, Dump Fill lines,
+    Perform GO/NO-GOs, Connect Launch Controller, Arm IMCs, GO for ignition]
+- name: Cold Flow
+  steps: [Perform actuator and sensor checkouts, Verify all valves closed and all
+      sensors nominal, Complete low pressure leak checks, Complete high pressure leak
+      checks, Complete Ox fill, Pressurize Ox Tank and Fuel Tank, Dump Fill lines,
+    Perform GO/NO-GOs, Arm IMCs, Pull Burn Wire]
+Devices:
+- key: EPB:0
+  label: Engine Power Board (ox)
+  ranges:
+    voltage: [0.0, 30.0]
+    current: [0.0, 20.0]
+- key: EPB:4
+  label: Engine Power Board (fuel)
+  ranges:
+    voltage: [0.0, 30.0]
+    current: [0.0, 20.0]
+- key: PMB:0
+  label: Power Management Board
+  ranges:
+    voltage: [0.0, 30.0]
+    temperature: [0.0, 80.0]
+- key: FMC:0
+  label: Flight Management Computer
+  ranges:
+    accel: [-16.0, 16.0]
+    gyro: [-2000.0, 2000.0]
+    mag: [-100.0, 100.0]
+    accelHi: [-100.0, 100.0]
+    altitude: [0.0, 5000.0]
+- key: RAB:0
+  label: Recovery Arming Board A
+- key: RAB:1
+  label: Recovery Arming Board B
+Packets:
+- name: PWM Set (servo)
+  op: pwm_set
+  fields:
+  - key: board_id
+    type: number
+    default: 0
+  - key: channel
+    type: number
+    default: 0
+  - key: pulse_us
+    type: number
+    default: 1500
+  - key: period_us
+    type: number
+    default: 20000
+- name: Load Switch (relay)
+  op: load_sw_set
+  fields:
+  - key: board_id
+    type: number
+    default: 0
+  - key: channel
+    type: number
+    default: 0
+  - key: enable
+    type: bool
+    default: false
+  - key: hold_ms
+    type: number
+    default: 0
+- name: IMC Arm
+  op: imc_arm
+  fields:
+  - key: board_id
+    type: number
+    default: 0
+  - key: pulse_ms
+    type: number
+    default: 0
+- name: Discover
+  op: discover
+- name: RAB Arm
+  op: rab_arm
+  fields:
+  - key: board_id
+    type: number
+    default: 0
+  - key: pulse_ms
+    type: number
+    default: 100
+- name: RAB Disarm
+  op: rab_disarm
+  fields:
+  - key: board_id
+    type: number
+    default: 0
+  - key: pulse_ms
+    type: number
+    default: 100
+- name: Aux Power
+  op: aux_power
+  fields:
+  - key: device
+    type: string
+    default: rfd
+  - key: enable
+    type: bool
+    default: false
+- name: RF Mode
+  op: rf_cfg
+  fields:
+  - key: mode
+    type: number
+    default: 0
+- name: Soundboard
+  op: sound
+  fields:
+  - key: action
+    type: string
+    default: tone
+  - key: idx
+    type: number
+    default: 0
+  - key: volume
+    type: number
+    default: 200
+  - key: freq_hz
+    type: number
+    default: 0
+  - key: ms
+    type: number
+    default: 0
+BuzzerMelodies:
+  test_chime:
+  - [523, 180]
+  - [659, 180]
+  - [784, 180]
+  - [1047, 320]
+  - [0, 80]
+  - [784, 160]
+  - [1047, 380]

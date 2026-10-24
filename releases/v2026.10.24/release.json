@@ -1,0 +1,59 @@
+{
+  "tag": "v2026.10.24",
+  "kind": "test",
+  "env": "dev",
+  "created": "2026-10-24T14:10:41.1805866-04:00",
+  "test": "Bench Test",
+  "notes": "minimal testing of ops and dev functions plus data saving and config saving checks",
+  "operator": "sys-adm@NOVA-SERVER",
+  "previous": "v2026.10.22",
+  "pins": {
+    "prod/backend": {
+      "commit": "49f5ffa5d2b2a05cdcf7fe97f39850557a22b1c6",
+      "branch": "dev"
+    },
+    "prod/frontend": {
+      "commit": "6d5759dc981cd44a2c964b163edefd43c55741bd",
+      "branch": "dev"
+    },
+    "pi/novaGround": {
+      "commit": "f12aeec053944eecacd349db27fc5db538fa899a",
+      "branch": "dev"
+    },
+    "firmware": {
+      "commit": "ae5b4fd9a0e77a24e86eb0b4d81b9d36c19645a5",
+      "branch": "(unchanged)"
+    }
+  },
+  "ranWith": {
+    "NovaThermo": {
+      "target": "novaThermo",
+      "checked": true,
+      "running": "dev",
+      "checkout": "dev",
+      "commit": "f12aeec053944eecacd349db27fc5db538fa899a",
+      "branch": "dev",
+      "dirty": 0,
+      "matchesPin": true
+    }
+  },
+  "config": [
+    {
+      "file": "flow-test.yaml",
+      "hash": "9c47b834d950c387"
+    },
+    {
+      "file": "hybrid.yaml",
+      "hash": "f76a4078a9cfd2ba"
+    },
+    {
+      "file": "liquid.yaml",
+      "hash": "aaf40f387c947fc4"
+    },
+    {
+      "file": "system.yaml",
+      "hash": "f678a1920035dd5f"
+    }
+  ],
+  "recordings": []
+}
