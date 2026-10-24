@@ -1,0 +1,50 @@
+{
+  "tag": "v2026.10.22",
+  "kind": "test",
+  "env": "dev",
+  "created": "2026-10-22T13:31:48.6303775-04:00",
+  "test": "Bench Test",
+  "notes": "pre-release before hardware risk changes",
+  "operator": "sys-adm@NOVA-SERVER",
+  "previous": "v2026.10.11",
+  "pins": {
+    "prod/backend": {
+      "commit": "49f5ffa5d2b2a05cdcf7fe97f39850557a22b1c6",
+      "branch": "dev"
+    },
+    "prod/frontend": {
+      "commit": "6d5759dc981cd44a2c964b163edefd43c55741bd",
+      "branch": "dev"
+    },
+    "pi/novaGround": {
+      "commit": "c65e2e1cd16f57ccfbdefbabd47170936559a4f3",
+      "branch": "(given by hand)"
+    },
+    "firmware": {
+      "commit": "ae5b4fd9a0e77a24e86eb0b4d81b9d36c19645a5",
+      "branch": "(unchanged)"
+    }
+  },
+  "config": [
+    {
+      "file": "flow-test.yaml",
+      "hash": "9c47b834d950c387"
+    },
+    {
+      "file": "hybrid.yaml",
+      "hash": "a4b48ad14b5f09f8"
+    },
+    {
+      "file": "liquid.yaml",
+      "hash": "aaf40f387c947fc4"
+    },
+    {
+      "file": "system.yaml",
+      "hash": "f678a1920035dd5f"
+    }
+  ],
+  "recordings": [
+    "2026-10-18-13_data_0",
+    "2026-10-18-17_data_0"
+  ]
+}
