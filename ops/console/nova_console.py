@@ -15,14 +15,25 @@ C:\\Nova\\console.json), so a repo update never invalidates it.
 Then open http://localhost:8080 (or http://<server-ip>:8080 from the operator
 laptop).
 
-Security note: any client that can reach this port can start and stop services.
-That is intentional for an isolated ground-station LAN. Do not expose this port
-to a routed or public network. Pass --read-only to serve status without the
-control buttons.
+The Raspberry Pis report themselves here: each one's nova-pi-report.timer POSTs
+a snapshot (which novaGround instance runs, its commit, its backend and whether
+that answers, the last data-file upload) to /api/pi-report every 15 s. The
+console can't SSH into the Pis, and doesn't need to. It only ever shows what's
+wrong and the Nova.ps1 command that fixes it; it never runs anything on a Pi.
+See docs/design/pi-orchestration.md.
+
+Security note: any client that can reach this port can start and stop services,
+and post a Pi report (which only changes what is displayed). That is
+intentional for an isolated ground-station LAN. Do not expose this port to a
+routed or public network. Pass --read-only to serve status without the control
+buttons.
 """
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
+import hmac
 import json
 import os
 import platform
@@ -48,6 +59,10 @@ _STATE_RE = re.compile(r"STATE\s+:\s+\d+\s+(\S+)")
 
 STATUS_CACHE_TTL_S = 1.0
 PROBE_TIMEOUT_S = 2.5
+# The Pis report every 15 s; three missed reports and we say so.
+STALE_REPORT_S = 45
+MAX_REPORT_BYTES = 256 * 1024
+RELEASES_SHOWN = 8
 
 
 # ── configuration ────────────────────────────────────────────────────────────
@@ -56,6 +71,9 @@ PROBE_TIMEOUT_S = 2.5
 DEFAULT_CONFIG = {
     "broker": {"service": "mosquitto", "host": "127.0.0.1", "port": 1883},
     "hosts": {},
+    "pis": [],
+    "environments": {},
+    "piStateFile": "",
     "server": "127.0.0.1",
     "logDir": r"C:\Nova\logs",
     "uiUrls": {},
@@ -199,6 +217,657 @@ def tail_log(path: str, lines: int = 80) -> str:
         return f"(could not read log: {exc})"
 
 
+# ── Nova.ps1 actions ─────────────────────────────────────────────────────────
+#
+# The buttons don't run Nova.ps1 here. This process runs as SYSTEM (no SSH
+# keys, no GitHub login), and deploy/install restart it. Instead a job file
+# goes into jobs.dir and the runner task (Nova.ps1 console-runner) runs it as
+# the station account with ops\console\Invoke-ConsoleJob.ps1, which splats
+# the values straight into Nova.ps1's parameters. Only what's below can run,
+# and every value is checked here first.
+
+NOVA = r".\ops\Nova.ps1"
+REF_RE = re.compile(r"^[A-Za-z0-9._/-]{1,120}$")
+TAG_RE = re.compile(r"^v\d{4}\.\d{2}\.\d{2}(\.\d+)?$")
+SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+JOB_ID_RE = re.compile(r"^[0-9]{8}-[0-9]{6}-[a-z0-9]{4}$")
+TEXT_MAX = 500
+
+# param: (kind, required, choices). kinds: bool, text, ref, tag, slug, enum, multi, pis
+ACTIONS = {
+    "status": {"params": {}},
+    "doctor": {"params": {}},
+    "use": {
+        "params": {"Target": ("enum", True, ["prod", "dev"])},
+        "warn": "Restarts novaGround on every Pi; actuators may change state.",
+    },
+    "get-changes": {
+        "params": {"Ref": ("ref", False, None), "PiRef": ("ref", False, None),
+                   "Only": ("multi", False, ["backend", "frontend"]),
+                   "Offline": ("bool", False, None), "SkipPi": ("bool", False, None)},
+        "warn": "Rebuilds the dev stack and the Pis' dev checkouts.",
+    },
+    "pin": {
+        "params": {"Test": ("text", True, None), "Notes": ("text", False, None),
+                   "Firmware": ("ref", False, None), "SkipPi": ("bool", False, None)},
+        "warn": "Creates a release commit and tag.",
+    },
+    "promote": {
+        "params": {"Target": ("tag", True, None)},
+        "warn": "Marks the release stable.",
+    },
+    "deploy": {
+        "params": {"Target": ("tag", False, None), "WithConfig": ("bool", False, None),
+                   "AllowPrerelease": ("bool", False, None), "AlsoDeploy": ("pis", False, None),
+                   "SkipPi": ("bool", False, None)},
+        "warn": "Restarts prod, every Pi and this console; actuators can change state.",
+    },
+    "publish": {
+        "params": {"DryRun": ("bool", False, None)},
+        "warn": "Pushes to GitHub and opens PRs.",
+    },
+    "archive": {"params": {}},
+    "hotfix": {
+        "params": {"Name": ("slug", True, None), "Test": ("text", True, None),
+                   "Notes": ("text", False, None), "SkipPi": ("bool", False, None)},
+        "warn": "Commits prod's edits to hotfix/<name> as a stable release.",
+    },
+    "install": {
+        "params": {"Env": ("enum", True, ["prod", "dev"]),
+                   "Only": ("multi", False, ["backend", "frontend", "fas", "console"]),
+                   "Offline": ("bool", False, None)},
+        "warn": "Services stay stopped afterwards.",
+    },
+}
+
+
+def changes_state(action: str, params: dict) -> bool:
+    if action in ("status", "doctor"):
+        return False
+    if action == "publish" and params.get("DryRun"):
+        return False
+    return True
+
+
+def _quote(value: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9._/:-]+", value):
+        return value
+    return '"' + value.replace('"', '`"') + '"'
+
+
+def validate_job(action: str, params, pis: list) -> tuple:
+    """(clean params, the equivalent command line) or ValueError."""
+    spec = ACTIONS.get(action)
+    if spec is None:
+        raise ValueError(f"unknown action {action!r}")
+    if not isinstance(params, dict):
+        raise ValueError("params must be an object")
+    extra = set(params) - set(spec["params"])
+    if extra:
+        raise ValueError(f"{action} doesn't take {', '.join(sorted(extra))}")
+    also_ok = [p.get("name") for p in pis if not p.get("pinned")]
+    clean = {}
+    for name, (kind, required, choices) in spec["params"].items():
+        v = params.get(name)
+        if kind == "bool":
+            if v not in (None, True, False):
+                raise ValueError(f"{name} must be true or false")
+            if v:
+                clean[name] = True
+            continue
+        if kind in ("multi", "pis"):
+            allowed = choices if kind == "multi" else also_ok
+            v = [x for x in (v or []) if x]
+            if not isinstance(v, list) or any(x not in allowed for x in v):
+                raise ValueError(f"{name} must be some of: {', '.join(allowed) or '(none)'}")
+            if v:
+                clean[name] = v
+            continue
+        v = "" if v is None else str(v).strip()
+        if not v:
+            if required:
+                raise ValueError(f"{name} is required")
+            continue
+        if kind == "text":
+            if len(v) > TEXT_MAX or any(ord(c) < 32 for c in v.replace("\n", " ")):
+                raise ValueError(f"{name} must be at most {TEXT_MAX} characters of plain text")
+        elif kind == "ref" and not REF_RE.match(v):
+            raise ValueError(f"{name} must be a branch, tag or commit name")
+        elif kind == "tag" and not TAG_RE.match(v):
+            raise ValueError(f"{name} must be a release tag like v2026.10.04")
+        elif kind == "slug" and not SLUG_RE.match(v):
+            raise ValueError(f"{name} must be lower-case words joined by hyphens, e.g. igniter-delay")
+        elif kind == "enum" and v not in choices:
+            raise ValueError(f"{name} must be one of: {', '.join(choices)}")
+        clean[name] = v
+
+    words = [NOVA, action]
+    if "Target" in clean:
+        words.append(clean["Target"])
+    for name, v in clean.items():
+        if name == "Target":
+            continue
+        if v is True:
+            words.append(f"-{name}")
+        elif isinstance(v, list):
+            words.append(f"-{name} {','.join(v)}")
+        else:
+            words.append(f"-{name} {_quote(v)}")
+    return clean, " ".join(words)
+
+
+def command_to_action(command: str, pis: list) -> dict | None:
+    """A suggested `.\\ops\\Nova.ps1 ...` command as a runnable action, if it is one."""
+    words = command.split()
+    if len(words) < 2 or words[0] != NOVA or words[1] not in ACTIONS:
+        return None
+    action, rest, params = words[1], words[2:], {}
+    if rest and not rest[0].startswith("-"):
+        params["Target"] = rest.pop(0)
+    while rest:
+        name = rest.pop(0).lstrip("-")
+        if rest and not rest[0].startswith("-"):
+            value = rest.pop(0)
+            spec = ACTIONS[action]["params"].get(name)
+            params[name] = value.split(",") if spec and spec[0] in ("multi", "pis") else value
+        else:
+            params[name] = True
+    try:
+        clean, display = validate_job(action, params, pis)
+    except ValueError:
+        return None
+    return {"action": action, "params": clean, "display": display, "changes": changes_state(action, clean),
+            "warn": ACTIONS[action].get("warn")}
+
+
+AUTH_MAX_FAILURES = 5           # wrong guesses from one address...
+AUTH_LOCKOUT_S = 120            # ...lock it out for this long
+
+
+def hash_password(password: str, iterations: int = 200000) -> dict:
+    """The same record Nova.ps1's Get-ConsolePasswordHash writes (used by tests and demos)."""
+    salt = os.urandom(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    return {"scheme": "pbkdf2-sha256", "iterations": iterations,
+            "salt": base64.b64encode(salt).decode(), "hash": base64.b64encode(digest).decode()}
+
+
+class ActionAuth:
+    """The password for actions that change state: prod's AdminPassword, kept
+    in console.json only as a salted PBKDF2 hash. Every such action asks for it;
+    nothing is remembered. With no hash configured, nothing that changes state
+    is allowed (fail closed)."""
+
+    def __init__(self, record: dict | None):
+        self.record = record if isinstance(record, dict) and record.get("hash") else None
+        self._lock = threading.Lock()
+        self._failures: dict = {}   # address -> [count, first failure time, locked until]
+
+    @property
+    def configured(self) -> bool:
+        return self.record is not None
+
+    def _check(self, password: str) -> bool:
+        try:
+            salt = base64.b64decode(self.record["salt"])
+            want = base64.b64decode(self.record["hash"])
+            got = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, int(self.record["iterations"]))
+        except (KeyError, ValueError, TypeError):
+            return False
+        return hmac.compare_digest(got, want)
+
+    def verify(self, password: str, address: str) -> tuple:
+        """(ok, message). Locks an address out after too many misses."""
+        if not self.configured:
+            return False, ("this console has no action password set up. Reinstall it so it gets one: "
+                           r".\ops\Nova.ps1 install -Env prod -Only console")
+        if not password:
+            return False, "this action needs the admin password"
+        now = time.time()
+        with self._lock:
+            count, first, locked = self._failures.get(address, [0, now, 0.0])
+            if locked > now:
+                return False, f"too many wrong passwords; try again in {int(locked - now) + 1} s"
+        if self._check(password):
+            with self._lock:
+                self._failures.pop(address, None)
+            return True, "ok"
+        with self._lock:
+            if now - first > AUTH_LOCKOUT_S:
+                count, first = 0, now
+            count += 1
+            locked = now + AUTH_LOCKOUT_S if count >= AUTH_MAX_FAILURES else 0.0
+            self._failures[address] = [count, first, locked]
+        if locked:
+            return False, f"wrong password; locked out for {AUTH_LOCKOUT_S} s after {count} tries"
+        return False, "wrong password"
+
+
+class JobRunner:
+    """Job files for the runner task, and their logs."""
+
+    def __init__(self, jobs: dict):
+        self.dir = (jobs or {}).get("dir") or ""
+        self.task = (jobs or {}).get("task") or ""
+        self._lock = threading.Lock()
+        self._avail = (0.0, False)
+
+    def available(self) -> bool:
+        """Is the runner task registered? Cached, since schtasks is slow."""
+        if not self.dir or not self.task or platform.system() != "Windows":
+            return False
+        checked, ok = self._avail
+        if time.time() - checked < 30:
+            return ok
+        try:
+            proc = subprocess.run(["schtasks.exe", "/query", "/tn", self.task], capture_output=True,
+                                  text=True, timeout=PROBE_TIMEOUT_S * 2, creationflags=_NO_WINDOW)
+            ok = proc.returncode == 0
+        except (subprocess.TimeoutExpired, OSError):
+            ok = False
+        self._avail = (time.time(), ok)
+        return ok
+
+    def kick(self) -> tuple:
+        try:
+            proc = subprocess.run(["schtasks.exe", "/run", "/tn", self.task], capture_output=True,
+                                  text=True, timeout=10, creationflags=_NO_WINDOW)
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            return False, str(exc)
+        return proc.returncode == 0, (proc.stdout + proc.stderr).strip()
+
+    def _path(self, job_id: str, suffix: str = ".json") -> str:
+        return os.path.join(self.dir, job_id + suffix)
+
+    def get(self, job_id: str) -> dict | None:
+        if not JOB_ID_RE.match(job_id or ""):
+            return None
+        try:
+            with open(self._path(job_id), "r", encoding="utf-8-sig") as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return None
+
+    def list(self, limit: int = 12) -> list:
+        try:
+            names = sorted((n[:-5] for n in os.listdir(self.dir)
+                            if n.endswith(".json") and JOB_ID_RE.match(n[:-5])), reverse=True)
+        except OSError:
+            return []
+        jobs = []
+        for job_id in names[:limit]:
+            job = self.get(job_id)
+            if job:
+                jobs.append(job)
+        return jobs
+
+    def active(self) -> dict | None:
+        for job in self.list(limit=20):
+            if job.get("status") in ("queued", "running"):
+                return job
+        return None
+
+    def nudge(self) -> None:
+        """Task Scheduler ignores a start while the task runs, so a job queued
+        just as the runner finished could sit there; start the task again."""
+        job = self.active()
+        if job and job.get("status") == "queued" and time.time() - float(job.get("requestedAt") or 0) > 10:
+            self.kick()
+
+    def submit(self, action: str, params: dict, display: str, sender: str) -> dict:
+        with self._lock:
+            busy = self.active()
+            if busy:
+                raise RuntimeError(f"{busy.get('display')} is still {busy.get('status')}")
+            os.makedirs(self.dir, exist_ok=True)
+            job_id = time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(2).hex()
+            job = {
+                "id": job_id, "action": action, "params": params, "display": display, "from": sender,
+                "requested": time.strftime("%Y-%m-%dT%H:%M:%S"), "requestedAt": time.time(),
+                "status": "queued", "started": None, "finished": None, "exitCode": None,
+            }
+            tmp = self._path(job_id, ".json.tmp")
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(job, fh, indent=1)
+            os.replace(tmp, self._path(job_id))
+        ok, message = self.kick()
+        if not ok:
+            job["kickError"] = message
+        return job
+
+    def read_log(self, job_id: str, offset: int) -> dict:
+        """The job's output from byte `offset` on; stderr once it has finished."""
+        job = self.get(job_id)
+        if job is None:
+            return {"job": None}
+        text, end = "", offset
+        try:
+            with open(self._path(job_id, ".log"), "rb") as fh:
+                fh.seek(offset)
+                data = fh.read(256 * 1024)
+                end = offset + len(data)
+                text = data.decode("utf-8", errors="replace")
+        except OSError:
+            pass
+        err = ""
+        if job.get("status") in ("done", "failed"):
+            try:
+                with open(self._path(job_id, ".err.log"), "rb") as fh:
+                    err = fh.read(64 * 1024).decode("utf-8", errors="replace").strip()
+            except OSError:
+                pass
+        return {"job": job, "text": text, "offset": end, "err": err}
+
+
+# ── Pi reports ───────────────────────────────────────────────────────────────
+
+
+class PiStore:
+    """The latest report from each Pi, kept in memory and in piStateFile so a
+    console restart doesn't forget them. Only Pis named in the config are
+    accepted; names match case-insensitively."""
+
+    def __init__(self, path: str, names: list):
+        self.path = path
+        self.names = {str(n).lower(): n for n in names if n}
+        self._lock = threading.Lock()
+        self._reports: dict = {}
+        self._load()
+
+    def _load(self) -> None:
+        if not self.path or not os.path.exists(self.path):
+            return
+        try:
+            with open(self.path, "r", encoding="utf-8-sig") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return
+        for name, entry in (data or {}).items():
+            canon = self.canonical(name)
+            if canon and isinstance(entry, dict) and isinstance(entry.get("report"), dict):
+                self._reports[canon] = entry
+
+    def canonical(self, name) -> str | None:
+        return self.names.get(str(name or "").lower())
+
+    def put(self, name: str, report: dict, sender: str) -> None:
+        entry = {"report": report, "received": time.time(), "from": sender}
+        with self._lock:
+            self._reports[name] = entry
+            self._save()
+
+    def _save(self) -> None:
+        # Called with the lock held, so two reports can't race on the temp file.
+        if not self.path:
+            return
+        try:
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(self._reports, fh, indent=1)
+            os.replace(tmp, self.path)
+        except OSError as exc:
+            print(f"[nova-console] could not save {self.path}: {exc}", file=sys.stderr)
+
+    def get(self, name: str) -> dict | None:
+        with self._lock:
+            return self._reports.get(name)
+
+    def all(self) -> dict:
+        with self._lock:
+            return dict(self._reports)
+
+
+def read_release_index(path: str) -> dict | None:
+    if not path:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8-sig") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def git_head(repo: str) -> str | None:
+    """A checkout's commit, read from its .git files. Not `git rev-parse`: the
+    console runs as SYSTEM, which git refuses to trust in C:\\Nova."""
+    if not repo:
+        return None
+    git = os.path.join(repo, ".git")
+    try:
+        if os.path.isfile(git):  # a submodule or worktree: "gitdir: <path>"
+            with open(git, "r", encoding="utf-8") as fh:
+                line = fh.read().strip()
+            if not line.startswith("gitdir:"):
+                return None
+            git = os.path.normpath(os.path.join(repo, line[len("gitdir:"):].strip()))
+        with open(os.path.join(git, "HEAD"), "r", encoding="utf-8") as fh:
+            head = fh.read().strip()
+        if not head.startswith("ref:"):
+            return head
+        ref = head[len("ref:"):].strip()
+        common = git
+        if os.path.isfile(os.path.join(git, "commondir")):
+            with open(os.path.join(git, "commondir"), "r", encoding="utf-8") as fh:
+                common = os.path.normpath(os.path.join(git, fh.read().strip()))
+        for base in (git, common):
+            loose = os.path.join(base, *ref.split("/"))
+            if os.path.isfile(loose):
+                with open(loose, "r", encoding="utf-8") as fh:
+                    return fh.read().strip()
+        with open(os.path.join(common, "packed-refs"), "r", encoding="utf-8") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) == 2 and parts[1] == ref:
+                    return parts[0]
+    except OSError:
+        return None
+    return None
+
+
+def short(sha) -> str:
+    return sha[:7] if isinstance(sha, str) and sha else "-------"
+
+
+def running_env(report: dict) -> tuple:
+    """(environment, label) of the checkout a Pi runs novaGround from."""
+    active = report.get("active")
+    if active in ("prod", "dev"):
+        return active, active
+    if active == "legacy":
+        return "prod", "prod (old novaGround.service)"
+    bench = report.get("bench")
+    if bench in ("prod", "dev"):
+        return bench, f"{bench} (run.sh)"
+    if bench:
+        return None, "a run.sh session"
+    return None, "nothing"
+
+
+def ago(seconds) -> str:
+    if seconds is None:
+        return "never"
+    seconds = int(seconds)
+    if seconds < 90:
+        return f"{seconds}s ago"
+    if seconds < 5400:
+        return f"{seconds // 60} min ago"
+    return f"{seconds // 3600} h ago"
+
+
+def pi_view(pi: dict, entry: dict | None, ping: dict, live: str | None, envs: dict,
+            prod_pin: str | None, prod_release: str | None, pinned_commit: str | None) -> dict:
+    """One Pi as the page shows it, with every flag worked out here so the
+    page only renders. A flag is {level: red|amber|info, text, fix, where}."""
+    name = pi.get("name")
+    flags = []
+
+    def flag(level, text, fix=None, where="ops PC"):
+        flags.append({"level": level, "text": text, "fix": fix, "where": where})
+
+    view = {
+        "name": name, "ip": pi.get("ip", ""), "target": pi.get("target"),
+        "pinned": bool(pi.get("pinned")), "ping": ping, "reported": entry is not None,
+        "age": None, "ageText": "never", "stale": True, "running": None, "runningLabel": "unknown",
+        "commit": None, "branch": None, "release": None, "hostname": None,
+        "instances": {}, "flags": flags,
+    }
+    install = f"sudo ./nova-pi.sh install --name {name} --target {pi.get('target')}"
+
+    if entry is None:
+        flag("amber", "never reported.", install, "Pi")
+        view["overall"] = "grey" if ping.get("state") != "ok" else "amber"
+        return view
+
+    rep = entry.get("report") or {}
+    age = max(0, time.time() - float(entry.get("received") or 0))
+    view.update({"age": int(age), "ageText": ago(age), "stale": age > STALE_REPORT_S,
+                 "hostname": rep.get("hostname"),
+                 "release": (rep.get("deployed") or {}).get("release")})
+    if view["stale"]:
+        flag("amber", f"no report for {ago(age)[:-4]}.",
+             "systemctl status nova-pi-report.timer", "Pi")
+
+    env, label = running_env(rep)
+    view["running"], view["runningLabel"] = env, label
+    instances = rep.get("instances") or {}
+    for e in ("prod", "dev"):
+        inst = instances.get(e) or {}
+        co = inst.get("checkout") or {}
+        view["instances"][e] = {
+            "state": inst.get("state"), "enabled": inst.get("enabled"),
+            "configured": inst.get("configured"), "backend": inst.get("backend"),
+            "expected": (envs.get(e) or {}).get("backend"),
+            "health": inst.get("backendHealth"), "commit": short(co.get("commit")),
+            "fullCommit": co.get("commit"), "branch": co.get("branch"),
+            "dirty": co.get("dirty") or 0, "built": inst.get("built"),
+            "lastUpload": inst.get("lastUpload"),
+        }
+
+    if rep.get("legacyUnit"):
+        flag("amber", "still on the old novaGround.service.", install, "Pi")
+    if rep.get("name") and str(rep.get("name")).lower() != str(name).lower():
+        flag("amber", f"pi.env name is '{rep.get('name')}'.", install, "Pi")
+    if rep.get("target") and pi.get("target") and rep.get("target") != pi.get("target"):
+        flag("amber", f"runs {rep.get('target')}; settings say {pi.get('target')}.", install, "Pi")
+
+    if live:
+        if not env:
+            flag("red", f"running nothing; {live} is live.", rf".\ops\Nova.ps1 use {live}")
+        elif env != live:
+            flag("red", f"running {env}; {live} is live.",
+                 rf".\ops\Nova.ps1 use {live}")
+
+    if env:
+        inst = view["instances"][env]
+        view["commit"], view["branch"] = inst["commit"], inst["branch"]
+        if not inst["configured"]:
+            flag("red", f"has no {env} settings.", rf".\ops\Nova.ps1 use {live or env}")
+        elif inst["expected"] and inst["backend"] != inst["expected"]:
+            flag("red", f"{env} backend is {inst['backend']}, should be {inst['expected']}.",
+                 rf".\ops\Nova.ps1 use {live or env}")
+        health = inst["health"]
+        # Only the live stack's backend is meant to be up.
+        if health and not health.get("ok") and env == live:
+            flag("red", f"backend {inst['backend']} unreachable ({health.get('detail')}).",
+                 r".\ops\Nova.ps1 status")
+        up = inst["lastUpload"]
+        if up and not up.get("ok"):
+            bad = ", ".join(f"{f.get('file')}: {f.get('error')}" for f in (up.get("files") or []) if not f.get("ok"))
+            flag("red", f"upload failed at {up.get('time')}: {bad or 'see the log'}.",
+                 f"journalctl -u novaGround@{env} | grep UPLOAD", "Pi")
+        if inst["dirty"]:
+            flag("amber", f"{inst['dirty']} uncommitted change(s) in {env}.")
+
+    prod = view["instances"].get("prod") or {}
+    if view["pinned"] and prod_pin and prod.get("fullCommit") and prod["fullCommit"] != prod_pin:
+        flag("amber", f"prod is {prod['commit']}; {prod_release} pins {short(prod_pin)}.",
+             r".\ops\Nova.ps1 deploy")
+    if (not view["pinned"] and pinned_commit and env and view["instances"][env]["fullCommit"]
+            and view["instances"][env]["fullCommit"] != pinned_commit):
+        flag("info", f"runs {view['commit']}; novaGround runs {short(pinned_commit)}.")
+
+    levels = {f["level"] for f in flags}
+    if "red" in levels:
+        view["overall"] = "red"
+    elif "amber" in levels or view["stale"]:
+        view["overall"] = "amber"
+    else:
+        view["overall"] = "green"
+    return view
+
+
+def releases_view(index: dict | None, pi_views: list) -> dict:
+    if not index:
+        return {"available": False}
+    releases = index.get("releases") or []
+    prod = (index.get("deployed") or {}).get("prod")
+    latest = index.get("latestStable")
+    rows = []
+    for r in releases[:RELEASES_SHOWN]:
+        pins = r.get("pins") or {}
+        ran = []
+        for name, rw in (r.get("ranWith") or {}).items():
+            if isinstance(rw, dict) and rw.get("checked") and rw.get("commit"):
+                ran.append({"name": name, "commit": short(rw.get("commit")), "branch": rw.get("branch"),
+                            "matches": bool(rw.get("matchesPin")), "dirty": rw.get("dirty") or 0})
+            else:
+                ran.append({"name": name, "commit": None,
+                            "note": rw.get("note") if isinstance(rw, dict) else None})
+        rows.append({
+            "tag": r.get("tag"), "created": (r.get("created") or "")[:16].replace("T", " "),
+            "test": r.get("test"), "kind": r.get("kind"), "stable": bool(r.get("stable")),
+            "prod": r.get("tag") == prod, "latest": r.get("tag") == latest,
+            "novaGround": short((pins.get("pi/novaGround") or {}).get("commit")),
+            "ranWith": ran,
+        })
+    return {"available": True, "prod": prod, "latestStable": latest,
+            "newest": releases[0].get("tag") if releases else None, "releases": rows}
+
+
+def suggestions(live: str | None, pis: list, rel: dict, prod_release_entry: dict | None,
+                pi_cfgs: list | None = None) -> list:
+    """What to do next, each with its Nova.ps1 (or Pi) command, and the
+    action that runs it from the console when it's a Nova.ps1 one."""
+    out = []
+
+    def add(level, text, command, where="ops PC"):
+        if not any(s["command"] == command and s["text"] == text for s in out):
+            action = command_to_action(command, pi_cfgs or []) if where == "ops PC" else None
+            out.append({"level": level, "text": text, "command": command, "where": where, "action": action})
+
+    if live is None:
+        add("red", "Nothing is live.", r".\ops\Nova.ps1 use prod")
+    elif live == "dev":
+        add("amber", "Dev is live.",
+            r".\ops\Nova.ps1 use prod")
+    for pi in pis:
+        for f in pi["flags"]:
+            if f["fix"] and f["level"] in ("red", "amber"):
+                add(f["level"], f"{pi['name']} {f['text']}", f["fix"], f["where"])
+    if rel.get("available"):
+        prod, latest, newest = rel.get("prod"), rel.get("latestStable"), rel.get("newest")
+        if latest and prod != latest:
+            add("amber", f"Prod runs {prod or 'an unknown release'}; newest stable is {latest}.",
+                r".\ops\Nova.ps1 deploy")
+        if newest and newest != latest and not any(r["tag"] == newest and r["stable"] for r in rel["releases"]):
+            add("info", f"{newest} isn't promoted.",
+                rf".\ops\Nova.ps1 promote {newest}")
+    # Pis that aren't pinned keep their code on deploy; offer the opt-in.
+    if prod_release_entry:
+        for pi in pis:
+            if pi["pinned"]:
+                continue
+            rw = (prod_release_entry.get("ranWith") or {}).get(pi["name"]) or {}
+            want, have = rw.get("commit"), (pi["instances"].get("prod") or {}).get("fullCommit")
+            if want and have and want != have:
+                add("info", f"{pi['name']} prod is {short(have)}; it ran {short(want)} in "
+                            f"{prod_release_entry.get('tag')}.",
+                    rf".\ops\Nova.ps1 deploy {prod_release_entry.get('tag')} -AlsoDeploy {pi['name']}")
+    order = {"red": 0, "amber": 1, "info": 2}
+    return sorted(out, key=lambda s: order.get(s["level"], 3))
+
+
 # ── status assembly ──────────────────────────────────────────────────────────
 
 
@@ -206,8 +875,12 @@ class StatusCollector:
     """Collects the whole picture in parallel, with a short cache so a browser
     polling every second cannot pile up probes faster than they complete."""
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, store: PiStore | None = None, read_only: bool = False):
         self.config = config
+        self.store = store or PiStore("", [])
+        self.runner = JobRunner(config.get("jobs") or {})
+        self.auth = ActionAuth(config.get("actionAuth"))
+        self.read_only = read_only
         self._lock = threading.Lock()
         self._cached: dict | None = None
         self._cached_at = 0.0
@@ -259,8 +932,84 @@ class StatusCollector:
                 "overall": _overall(state, health),
             })
 
+        # Whichever environment's backend runs, prod first (Nova.ps1's Get-LiveStack).
+        live = None
+        for env in ("prod", "dev"):
+            if any(s["env"] == env and s["component"] == "backend" and s["state"] == "RUNNING" for s in services):
+                live = env
+                break
+
+        envs = cfg.get("environments") or {}
+        index = read_release_index(cfg.get("releaseIndex", ""))
+        prod_release = ((index or {}).get("deployed") or {}).get("prod")
+        prod_entry = None
+        for r in (index or {}).get("releases") or []:
+            if r.get("tag") == prod_release:
+                prod_entry = r
+        prod_pin = (((prod_entry or {}).get("pins") or {}).get("pi/novaGround") or {}).get("commit")
+
+        pi_cfgs = cfg.get("pis") or []
+        pinned_commit = None
+        for pi in pi_cfgs:
+            if pi.get("pinned"):
+                entry = self.store.get(pi.get("name"))
+                if entry:
+                    rep = entry.get("report") or {}
+                    env, _ = running_env(rep)
+                    co = (((rep.get("instances") or {}).get(env) or {}).get("checkout") or {}) if env else {}
+                    pinned_commit = co.get("commit")
+        pis = []
+        for pi in pi_cfgs:
+            name = pi.get("name")
+            ping = host_futures[name].result() if name in host_futures else probe_ping(pi.get("ip", ""))
+            view = pi_view(pi, self.store.get(name), ping, live, envs, prod_pin, prod_release, pinned_commit)
+            for f in view["flags"]:
+                f["action"] = command_to_action(f["fix"], pi_cfgs) if f["fix"] and f["where"] == "ops PC" else None
+            pis.append(view)
+        rel = releases_view(index, pis)
+
+        # What the action forms offer: every release, and the Pis -AlsoDeploy can name.
+        tags = [{"tag": r.get("tag"), "stable": bool(r.get("stable")), "kind": r.get("kind"), "test": r.get("test")}
+                for r in (index or {}).get("releases") or []]
+        self.runner.nudge()
+        runner = {
+            "available": self.runner.available() and not self.read_only,
+            "registered": self.runner.available(),
+            "readOnly": self.read_only,
+            "passwordSet": self.auth.configured,
+            "task": self.runner.task,
+            "active": self.runner.active(),
+        }
+
+        # For the banner: prod's release, or the commits dev runs.
+        version = {}
+        if live == "prod":
+            version = {"release": prod_release}
+        elif live == "dev":
+            commits = []
+            dev_paths = (cfg.get("checkouts") or {}).get("dev") or {}
+            for name in ("backend", "frontend"):
+                sha = git_head(dev_paths.get(name, ""))
+                if sha:
+                    commits.append({"name": name, "commit": short(sha)})
+            pinned = next((p for p in pis if p["pinned"]), None)
+            if pinned and (pinned["instances"].get("dev") or {}).get("fullCommit"):
+                commits.append({"name": "novaGround", "commit": pinned["instances"]["dev"]["commit"]})
+            version = {"commits": commits}
+
         return {
             "time": time.strftime("%H:%M:%S"),
+            "liveStack": live,
+            "version": version,
+            "pis": pis,
+            "releases": rel,
+            "suggestions": suggestions(live, pis, rel, prod_entry, pi_cfgs),
+            "runner": runner,
+            "forms": {
+                "tags": tags,
+                "latestStable": (index or {}).get("latestStable"),
+                "alsoDeploy": [p.get("name") for p in pi_cfgs if not p.get("pinned")],
+            },
             "broker": {
                 "service": broker.get("service"),
                 "state": broker_svc.result(),
@@ -297,219 +1046,14 @@ def _overall(state: str, health: dict) -> str:
 # ── HTTP server ──────────────────────────────────────────────────────────────
 
 
-PAGE = """<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Nova Console</title>
-<style>
-  :root {
-    --bg: #10131a; --panel: #171b24; --line: #262c38; --text: #e6e9ef;
-    --muted: #8b94a7; --green: #35c07f; --amber: #e3b341; --red: #e5534b;
-    --accent: #4c8dff;
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text);
-         font: 15px/1.5 "Segoe UI", system-ui, sans-serif; }
-  header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
-           padding: 18px 24px; border-bottom: 1px solid var(--line); }
-  h1 { font-size: 19px; margin: 0; letter-spacing: .3px; }
-  .clock { color: var(--muted); font-size: 13px; margin-left: auto; }
-  main { padding: 20px 24px 60px; max-width: 1100px; }
-  section { margin-bottom: 26px; }
-  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1.2px;
-       color: var(--muted); margin: 0 0 10px; font-weight: 600; }
-  .row { display: flex; align-items: center; gap: 14px; padding: 11px 14px;
-         background: var(--panel); border: 1px solid var(--line);
-         border-radius: 8px; margin-bottom: 7px; flex-wrap: wrap; }
-  .dot { width: 11px; height: 11px; border-radius: 50%; flex: none;
-         box-shadow: 0 0 9px currentColor; }
-  .green { color: var(--green); background: var(--green); }
-  .amber { color: var(--amber); background: var(--amber); }
-  .red   { color: var(--red);   background: var(--red); }
-  .grey  { color: #4a5265;      background: #4a5265; box-shadow: none; }
-  .name { font-weight: 600; min-width: 190px; }
-  .meta { color: var(--muted); font-size: 13px; min-width: 150px; }
-  .spacer { flex: 1 1 auto; }
-  button { background: #222836; color: var(--text); border: 1px solid var(--line);
-           padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }
-  button:hover:not(:disabled) { border-color: var(--accent); color: #fff; }
-  button:disabled { opacity: .4; cursor: default; }
-  .links a { color: var(--accent); text-decoration: none; margin-right: 18px; font-size: 14px; }
-  .links a:hover { text-decoration: underline; }
-  .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
-           background: #222836; border: 1px solid var(--line); padding: 9px 18px;
-           border-radius: 8px; opacity: 0; transition: opacity .25s; font-size: 14px; }
-  .toast.show { opacity: 1; }
-  pre { background: #0c0f15; border: 1px solid var(--line); border-radius: 8px;
-        padding: 12px; overflow: auto; max-height: 320px; font-size: 12.5px;
-        color: #c7cddb; margin: 6px 0 0; }
-  details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
-  .env-tag { font-size: 11px; padding: 1px 7px; border-radius: 4px;
-             border: 1px solid var(--line); color: var(--muted); }
-  .stale { opacity: .45; }
-</style>
-</head>
-<body>
-<header>
-  <h1>Nova Console</h1>
-  <span class="env-tag" id="server"></span>
-  <span class="clock" id="clock">connecting…</span>
-</header>
-<main>
-  <section>
-    <h2>Quick links</h2>
-    <div class="row links" id="links"></div>
-  </section>
-  <section>
-    <h2>Broker</h2>
-    <div id="broker"></div>
-  </section>
-  <section>
-    <h2>Services</h2>
-    <div id="services"></div>
-  </section>
-  <section>
-    <h2>Remote hosts</h2>
-    <div id="hosts"></div>
-  </section>
-</main>
-<div class="toast" id="toast"></div>
-<script>
-const READ_ONLY = __READ_ONLY__;
-let busy = false;
-
-function el(tag, cls, text) {
-  const n = document.createElement(tag);
-  if (cls) n.className = cls;
-  if (text !== undefined) n.textContent = text;
-  return n;
+# The page itself lives in web/ next to this file: console.html, console.css
+# and console.js. Read on each request, so it follows the checkout.
+WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+WEB_FILES = {
+    "console.html": "text/html; charset=utf-8",
+    "console.css": "text/css; charset=utf-8",
+    "console.js": "text/javascript; charset=utf-8",
 }
-
-function toast(msg) {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 3200);
-}
-
-function row(colour, name, meta, extra) {
-  const r = el('div', 'row');
-  r.appendChild(el('span', 'dot ' + colour));
-  r.appendChild(el('span', 'name', name));
-  r.appendChild(el('span', 'meta', meta));
-  if (extra) { r.appendChild(el('span', 'spacer')); extra.forEach(e => r.appendChild(e)); }
-  return r;
-}
-
-async function act(service, action) {
-  if (busy) return;
-  busy = true;
-  toast(action + ' ' + service + '…');
-  try {
-    const resp = await fetch('/api/action', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({service, action})
-    });
-    const body = await resp.json();
-    toast(body.ok ? (service + ': ' + body.message) : ('FAILED — ' + body.message));
-  } catch (err) {
-    toast('request failed: ' + err);
-  } finally {
-    busy = false;
-    refresh(true);
-  }
-}
-
-function ctlButtons(svc) {
-  if (READ_ONLY) return [];
-  const mk = (label, action) => {
-    const b = el('button', null, label);
-    b.onclick = () => act(svc.service, action);
-    b.disabled = svc.state === 'NOT_INSTALLED';
-    return b;
-  };
-  return [mk('Start', 'start'), mk('Stop', 'stop'), mk('Restart', 'restart')];
-}
-
-function logBlock(svc) {
-  const d = el('details');
-  d.appendChild(el('summary', null, 'logs'));
-  const pre = el('pre', null, 'loading…');
-  d.appendChild(pre);
-  d.addEventListener('toggle', async () => {
-    if (!d.open) return;
-    pre.textContent = 'loading…';
-    const resp = await fetch('/api/logs?service=' + encodeURIComponent(svc.service));
-    pre.textContent = await resp.text();
-    pre.scrollTop = pre.scrollHeight;
-  });
-  return d;
-}
-
-function render(data) {
-  document.getElementById('clock').textContent = 'updated ' + data.time;
-  document.getElementById('server').textContent = data.server;
-  document.body.classList.remove('stale');
-
-  const links = document.getElementById('links');
-  links.innerHTML = '';
-  for (const [env, url] of Object.entries(data.uiUrls || {})) {
-    const a = el('a', null, 'novaOps UI (' + env + ')');
-    a.href = url; a.target = '_blank';
-    links.appendChild(a);
-  }
-
-  const b = data.broker;
-  const bColour = b.state === 'RUNNING' && b.port.state === 'ok' ? 'green'
-                : b.state === 'RUNNING' ? 'amber' : 'red';
-  const bWrap = document.getElementById('broker');
-  bWrap.innerHTML = '';
-  bWrap.appendChild(row(bColour, b.service || 'mosquitto',
-      b.state + ' · ' + b.endpoint + ' · ' + b.port.state + ' ' + b.port.detail,
-      READ_ONLY ? [] : ctlButtons({service: b.service, state: b.state})));
-
-  const wrap = document.getElementById('services');
-  wrap.innerHTML = '';
-  let currentEnv = null;
-  for (const svc of data.services) {
-    if (svc.env !== currentEnv) {
-      currentEnv = svc.env;
-      wrap.appendChild(el('h2', null, currentEnv));
-    }
-    const meta = svc.state + (svc.health.detail ? ' · ' + svc.health.detail : '');
-    const r = row(svc.overall === 'red' && svc.state === 'NOT_INSTALLED' ? 'grey' : svc.overall,
-                  svc.component, meta, ctlButtons(svc));
-    wrap.appendChild(r);
-    wrap.appendChild(logBlock(svc));
-  }
-
-  const hosts = document.getElementById('hosts');
-  hosts.innerHTML = '';
-  for (const h of data.hosts) {
-    hosts.appendChild(row(h.ping.state === 'ok' ? 'green' : 'red', h.name,
-        h.ip + ' · ' + h.ping.state + ' ' + h.ping.detail));
-  }
-}
-
-async function refresh(force) {
-  try {
-    const resp = await fetch('/api/status' + (force ? '?force=1' : ''));
-    render(await resp.json());
-  } catch (err) {
-    document.getElementById('clock').textContent = 'console unreachable';
-    document.body.classList.add('stale');
-  }
-}
-
-refresh(true);
-setInterval(() => { if (!busy) refresh(false); }, 2000);
-</script>
-</body>
-</html>
-"""
 
 
 class ConsoleHandler(BaseHTTPRequestHandler):
@@ -543,12 +1087,16 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         params = dict(p.split("=", 1) for p in query.split("&") if "=" in p)
 
         if path in ("/", "/index.html"):
-            page = PAGE.replace("__READ_ONLY__", "true" if self.read_only else "false")
-            self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
+            self._web_file("console.html")
+        elif path.startswith("/web/"):
+            self._web_file(path[len("/web/"):])
         elif path == "/api/health":
             self._json(200, {"ok": True})
         elif path == "/api/status":
             self._json(200, self.collector.get(force=params.get("force") == "1"))
+        elif path == "/api/pis":
+            # The raw reports, as the Pis sent them.
+            self._json(200, self.collector.store.all())
         elif path == "/api/releases" or path.startswith("/api/releases/"):
             self._releases(urllib.parse.unquote(path[len("/api/releases/"):]) if path != "/api/releases" else "")
         elif path == "/api/logs":
@@ -560,8 +1108,96 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             err = tail_log(os.path.join(self.log_dir, f"{name}.err.log"))
             body = f"--- {name}.out.log ---\n{out}\n\n--- {name}.err.log ---\n{err}\n"
             self._send(200, body.encode("utf-8"), "text/plain; charset=utf-8")
+        elif path == "/api/jobs":
+            runner = self.collector.runner
+            self._json(200, {"available": runner.available() and not self.read_only,
+                             "active": runner.active(), "jobs": runner.list()})
+        elif path.startswith("/api/jobs/"):
+            job_id = path[len("/api/jobs/"):]
+            try:
+                offset = max(0, int(params.get("offset", "0")))
+            except ValueError:
+                offset = 0
+            result = self.collector.runner.read_log(job_id, offset)
+            if result.get("job") is None:
+                self._json(404, {"ok": False, "message": "unknown job"})
+            else:
+                self._json(200, result)
         else:
             self._send(404, b"not found", "text/plain; charset=utf-8")
+
+    def _web_file(self, name: str) -> None:
+        # Only the page's own files, by exact name: never a path off the wire.
+        ctype = WEB_FILES.get(name)
+        if ctype is None:
+            self._send(404, b"not found", "text/plain; charset=utf-8")
+            return
+        try:
+            with open(os.path.join(WEB_DIR, name), "rb") as fh:
+                body = fh.read()
+        except OSError as exc:
+            self._send(500, f"console page missing: {exc}".encode("utf-8"), "text/plain; charset=utf-8")
+            return
+        self._send(200, body, ctype)
+
+    def _read_json_body(self) -> dict | None:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length > MAX_REPORT_BYTES:
+                return None
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except (ValueError, TypeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _submit_job(self) -> None:
+        """A Nova.ps1 action from a button: validated here, run by the runner
+        task. With "preview": true, only validated, so read-only consoles and
+        consoles without a runner can still show (and copy) the command."""
+        runner = self.collector.runner
+        payload = self._read_json_body()
+        if payload is not None and not payload.get("preview"):
+            if self.read_only:
+                self._json(403, {"ok": False, "message": "console is running read-only"})
+                return
+            if not runner.available():
+                self._json(503, {"ok": False, "message": (
+                    "the console runner isn't set up. In an elevated PowerShell on the ops PC: "
+                    r".\ops\Nova.ps1 console-runner")})
+                return
+        if payload is None:
+            self._json(400, {"ok": False, "message": "bad request body"})
+            return
+        action = str(payload.get("action", ""))
+        try:
+            params, display = validate_job(action, payload.get("params") or {},
+                                           self.collector.config.get("pis") or [])
+        except ValueError as exc:
+            self._json(400, {"ok": False, "message": str(exc)})
+            return
+        changes = changes_state(action, params)
+        auth = self.collector.auth
+        if payload.get("preview"):
+            # What the confirm dialog shows (or what gets copied when nothing can run).
+            self._json(200, {"ok": True, "display": display, "params": params, "changes": changes,
+                             "warn": ACTIONS[action].get("warn"), "needsPassword": changes})
+            return
+        if changes:
+            # Status, doctor and a publish dry run stay open; everything else
+            # needs prod's AdminPassword, every time.
+            ok, message = auth.verify(str(payload.get("password") or ""), self.client_address[0])
+            if not ok:
+                self._json(401, {"ok": False, "needsPassword": True, "message": message})
+                return
+        try:
+            job = runner.submit(payload["action"], params, display, self.client_address[0])
+        except RuntimeError as exc:
+            self._json(409, {"ok": False, "message": f"one action at a time: {exc}"})
+            return
+        except OSError as exc:
+            self._json(500, {"ok": False, "message": f"could not queue the job: {exc}"})
+            return
+        self._json(200, {"ok": True, "job": job})
 
     def _releases(self, which: str) -> None:
         """Release lookup for the Pi: `nova-pi.sh deploy <tag>` asks here which
@@ -589,7 +1225,40 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 return
         self._json(404, {"ok": False, "message": f"unknown release {which!r}"})
 
+    def _pi_report(self) -> None:
+        """A Pi's snapshot from `nova-pi.sh report`. Accepted in read-only mode
+        too: it changes what's shown, never what runs."""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = -1
+        if length <= 0 or length > MAX_REPORT_BYTES:
+            self._json(400, {"ok": False, "message": "missing or oversized report"})
+            return
+        try:
+            report = json.loads(self.rfile.read(length))
+        except ValueError:
+            self._json(400, {"ok": False, "message": "report is not JSON"})
+            return
+        if not isinstance(report, dict):
+            self._json(400, {"ok": False, "message": "report must be a JSON object"})
+            return
+        name = self.collector.store.canonical(report.get("name"))
+        if not name:
+            self._json(403, {"ok": False, "message": (
+                f"unknown Pi {report.get('name')!r}: add it to Pi.Targets and Hosts in "
+                "ops/nova.settings.ps1, then re-run Nova.ps1 install, or fix NOVA_PI_NAME on the Pi")})
+            return
+        self.collector.store.put(name, report, self.client_address[0])
+        self._json(200, {"ok": True})
+
     def do_POST(self):  # noqa: N802
+        if self.path == "/api/pi-report":
+            self._pi_report()
+            return
+        if self.path == "/api/jobs":
+            self._submit_job()
+            return
         if self.path != "/api/action":
             self._send(404, b"not found", "text/plain; charset=utf-8")
             return
@@ -626,13 +1295,14 @@ def main() -> None:
                         help="Bind address. Use 127.0.0.1 to keep the console "
                              "local to this PC only.")
     parser.add_argument("--read-only", action="store_true",
-                        help="Serve status without start/stop/restart controls")
+                        help="Serve status without start/stop/restart controls or Nova.ps1 actions")
     args = parser.parse_args()
 
     config = load_config(args.config)
-    collector = StatusCollector(config)
+    store = PiStore(config.get("piStateFile", ""), [p.get("name") for p in config.get("pis", [])])
+    collector = StatusCollector(config, store, read_only=args.read_only)
 
-    known = {s["service"] for s in config.get("services", []) if s.get("service")}
+    known ={s["service"] for s in config.get("services", []) if s.get("service")}
     broker_service = config.get("broker", {}).get("service")
     if broker_service:
         known.add(broker_service)
@@ -646,7 +1316,7 @@ def main() -> None:
     server = ThreadingHTTPServer((args.bind, args.port), ConsoleHandler)
     server.daemon_threads = True
     print(f"[nova-console] serving on http://{args.bind}:{args.port} "
-          f"({len(known)} services, read_only={args.read_only})")
+          f"({len(known)} services, {len(store.names)} Pis, read_only={args.read_only})")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

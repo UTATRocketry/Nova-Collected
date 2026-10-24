@@ -95,13 +95,30 @@ $NovaSettings = @{
         ReleasePrefix = 'release/'
     }
 
-    # -- Raspberry Pi (novaGround) -------------------------------------------
-    # pin reads the tested commit from DevDir over SSH; deploy runs
-    # nova-pi.sh there. Key-based SSH avoids a password prompt each time.
+    # -- Raspberry Pis (novaGround repo) ------------------------------------
+    # Every Pi runs the novaGround repo, in a prod and a dev checkout, as
+    # novaGround@prod / novaGround@dev. use/deploy/get-changes write each
+    # Pi's /etc/nova/novaGround-<env>.env from the settings above (server
+    # address, broker port, each environment's BackendPort) and switch it
+    # along with the PC. Key-based SSH avoids a password prompt each time.
+    #
+    # Targets: each Pi's name -> the binary it runs. A Pi's address comes from
+    # Hosts / HostNames under the same name. The name must match NOVA_PI_NAME
+    # in the Pi's /etc/nova/pi.env (set by `nova-pi.sh install --name`).
+    #
+    # Pinned: the Pi whose dev commit a release pins (pi/novaGround). Every
+    # other Pi is recorded in the release as "ran with", never pinned, and
+    # deploy leaves its code alone unless told otherwise (-AlsoDeploy).
+    # docs/design/pi-orchestration.md explains why.
     Pi = @{
         User    = 'admin'
         ProdDir = '/home/admin/prod/novaGround'
         DevDir  = '/home/admin/dev/novaGround'
+        Pinned  = 'NovaGround'
+        Targets = @{
+            NovaGround = 'novaGround'
+            NovaThermo = 'novaThermo'
+        }
     }
 
     # -- Server state ------------------------------------------------------

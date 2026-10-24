@@ -23,7 +23,7 @@ place and is changed by exactly one kind of action.
 
 | State | Where | Changed by | Versioned by |
 |---|---|---|---|
-| **Code** | `prod/`, `dev/`, the Pi | `get-changes`, `deploy` | git, pinned by this repo |
+| **Code** | `prod/`, `dev/`, the Pis | `get-changes`, `deploy` | git, pinned by this repo (novaGround only; other Pis are recorded) |
 | **Station config** | `C:\Nova\config\<env>\` | the web interface | automatic content-hash history ([configs.md](docs/architecture/configs.md)) |
 | **Recordings** | `C:\Nova\data\<env>\` | the loggers | `.meta.json` per recording, bundled by `archive` |
 
@@ -36,8 +36,13 @@ A **release** is one commit of this repo, tagged `vYYYY.MM.DD` (`.2`, `.3`, ...
 for a second release on the same day). It pins:
 
 - the backend and frontend commits the dev stack was running;
-- the novaGround commit the Pi's dev checkout was running (read over SSH);
+- the novaGround commit the novaGround Pi's dev checkout was running (read over SSH);
 - the firmware commit it's compatible with (reference only).
+
+The other Pis (novaThermo) aren't pinned. `pin` records what each was running
+in `release.json` under `ranWith`, and the release notes say when it differs
+from novaGround. [design/pi-orchestration.md](docs/design/pi-orchestration.md)
+explains why.
 
 It also adds `releases/<tag>/`:
 
@@ -95,11 +100,8 @@ dev. To try one open PR's branch on its own, name it and limit it to its repo:
 .\ops\Nova.ps1 get-changes -Ref bugfix/fas-port-reconnect -Only backend
 ```
 
-On the Pi, update its dev checkout by hand:
-
-```bash
-cd /home/admin/dev/novaGround && git pull && ./nova-pi.sh build --env dev
-```
+It does the same for every Pi's dev checkout over SSH, and builds it. Pass
+`-PiRef <branch>` to switch the Pis to another novaGround branch.
 
 ### 2. Test on hardware
 
@@ -107,13 +109,9 @@ cd /home/admin/dev/novaGround && git pull && ./nova-pi.sh build --env dev
 .\ops\Nova.ps1 use dev
 ```
 
-This stops prod and starts dev; the dev UI is on port 3001. On the Pi, stop the
-prod service and run dev by hand:
-
-```bash
-sudo systemctl stop novaGround
-cd /home/admin/dev/novaGround && ./run.sh
-```
+This stops prod and starts dev, on the PC and on every Pi (`novaGround@prod`
+stops and `novaGround@dev` starts). It also rewrites each Pi's settings, so
+the Pis upload to dev's backend. The dev UI is on port 3001.
 
 Run the Integration Test ([CONTRIBUTING.md §7](CONTRIBUTING.md#7-testing)), then
 switch back:
@@ -128,7 +126,8 @@ switch back:
 .\ops\Nova.ps1 pin -Test "integration test" -Notes "All valves cycled; PGSO drift noted"
 ```
 
-This records the commits, the Pi's commit and the dev config as a new release
+This records the commits, novaGround's commit, what the other Pis ran, and the
+dev config as a new release
 such as `v2026.10.04`, and bundles the test's recordings
 into `C:\Nova\archive`.
 
@@ -139,7 +138,7 @@ into `C:\Nova\archive`.
 
 | Situation | Flag |
 |---|---|
-| The Pi is unreachable | `-GroundCommit <full hash> -GroundBranch dev`, or `-SkipPi` to keep the current novaGround pin |
+| The novaGround Pi is unreachable | `-GroundCommit <full hash> -GroundBranch dev`, or `-SkipPi` to keep the current novaGround pin |
 | New FAS firmware has been released and tested against | `-Firmware <commit or tag>` ([procedure](docs/maintenance/update-the-firmware-reference.md)) |
 
 ### 4. Promote it to stable
@@ -157,9 +156,12 @@ Once the release has earned it:
 ```
 
 This deploys the newest stable release: it checks out the pinned commits in
-`prod\`, reinstalls, restarts, and deploys the Pi over SSH. It always prints
-the novaGround commit, so you can do the Pi step by hand
-(`sudo ./nova-pi.sh deploy <tag or commit>`).
+`prod\`, reinstalls, restarts, deploys novaGround over SSH, and puts every Pi
+on prod. It always prints the novaGround commit, so you can do the Pi step by
+hand (`sudo ./nova-pi.sh deploy <tag or commit>`).
+
+novaThermo keeps its code: it isn't part of the release. To put it on what it
+ran with during the test, add `-AlsoDeploy NovaThermo`.
 
 `deploy` compares prod's live config with the tested config. Add `-WithConfig`
 to switch prod to the tested config; the old one is kept in the config history.
@@ -194,7 +196,7 @@ right away on the prod stack. Capture it **the same day**:
 ```
 
 This creates `hotfix/igniter-delay` in every prod checkout with edits (PC and
-Pi) from the release prod was running, commits the edits there, and records the
+the novaGround Pi) from the release prod was running, commits the edits there, and records the
 result as a new release that's **stable at once**, since prod already runs it.
 The next `publish` opens the hotfix PRs into `main` and, once they're merged,
 the back-merge PRs into `dev`.

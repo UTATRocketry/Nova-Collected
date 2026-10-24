@@ -14,9 +14,10 @@ Checks to run after changing this repo (the same as CI):
 
 ```powershell
 # In Windows PowerShell 5.1 (powershell.exe, the ground station's default), from the repo root.
-# Prints nothing when the script parses; repeat for any other ops\*.ps1 you changed.
+# Prints nothing when the script parses; repeat for any other ops\*.ps1 or ops\console\*.ps1 you changed.
 $e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\ops\Nova.ps1", [ref]$null, [ref]$e); $e
 python -m py_compile ops/console/nova_console.py
+node --check ops/console/web/console.js
 ```
 
 Read-only, safe anywhere: `.\ops\Nova.ps1 status`, `.\ops\Nova.ps1 doctor`,
@@ -117,7 +118,17 @@ Code repos, run inside their `dev/` clones:
   - local bare repos stand in for GitHub;
   - load the script's functions via the PowerShell AST;
   - stub `Assert-Admin`, `Invoke-Install`, `Set-StackRunning`,
-    `Invoke-PiSsh` and `Invoke-Gh`, so the git operations still run for real.
+    `Invoke-PiSsh` (or `Invoke-PiScript`, to run the Pi scripts in local bash)
+    and `Invoke-Gh`, so the git operations still run for real.
+- **The console's buttons run `Nova.ps1` through a scheduled task.** A new
+  action or parameter must be added in three places: `ACTIONS` in
+  `nova_console.py`, the allow-lists in `ops/console/Invoke-ConsoleJob.ps1`,
+  and the form in `ops/console/web/console.js`. `Nova.ps1` must never prompt when
+  `$NonInteractive` is set (the runner sets `NOVA_NONINTERACTIVE`).
+- **Each Pi's `/etc/nova/novaGround-<env>.env` belongs to `Nova.ps1`.** It
+  rewrites them on `use`, `deploy` and `get-changes` from the settings. A new
+  per-environment Pi setting goes in `Get-PiEnvFileText`, not on the Pi.
+  `docs/design/pi-orchestration.md` has the model.
 
 ## Related documentation
 

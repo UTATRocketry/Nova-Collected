@@ -252,8 +252,9 @@ the UI and actually use it, going through everything that needs checking, and
 for each step it says how you know it worked.
 
 - **Simulators** need no hardware: `tools/novaMock.py` and
-  `tools/nova_dummy.py` in the backend, and `./run.sh --target novaMock` on
-  novaGround.
+  `tools/nova_dummy.py` in the backend, and
+  `./run.sh --target novaMock --broker localhost:1883 --backend localhost:8001`
+  on novaGround.
 - **Bench:** ask a lead to put your branch on the dev stack with
   `Nova.ps1 get-changes -Ref <your branch>`.
 

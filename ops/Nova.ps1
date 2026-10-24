@@ -29,15 +29,17 @@
     See CONTRIBUTING.md for the branches (dev, main, hotfix/*, release/*).
 
 .PARAMETER Action
-    get-changes  Fetch and check out new code in the dev folders, then
-                 reinstall/rebuild dev. Always dev.
-    use          `use dev` / `use prod`: stop one stack and start the other.
-    pin          Pin the commits dev is running (plus the Pi's) and the dev
-                 config as a new release tag. Always reads dev.
+    get-changes  Fetch and check out new code in the dev folders (PC and every
+                 Pi), then reinstall/rebuild dev. Always dev.
+    use          `use dev` / `use prod`: stop one stack and start the other,
+                 on the PC and on every Pi (whose settings it rewrites).
+    pin          Pin the commits dev is running (plus novaGround's) and the
+                 dev config as a new release tag. Other Pis are recorded as
+                 "ran with", not pinned. Always reads dev.
     promote      `promote <tag>`: mark a pinned release as stable.
     deploy       `deploy [<tag>]`: check out a release in prod (default: the
-                 newest stable), reinstall, restart, and deploy the Pi.
-                 Always prod.
+                 newest stable), reinstall, restart, deploy novaGround, and
+                 put every Pi on prod. Always prod.
     publish      Push releases and tags, create/update GitHub releases.
     archive      Bundle finished recordings (data + meta + config) into
                  ArchiveDir. Also run automatically by pin.
@@ -51,6 +53,10 @@
     status       Services, which stack is live, and what each is running.
     logs         Tail a service log.
     doctor       Check prerequisites and diagnose a stack that will not come up.
+    console-runner
+                 Register (or refresh) the "Nova Console Runner" scheduled
+                 task, which runs the actions started from the Nova Console's
+                 buttons as this account. Asks for this account's password once.
 
 .PARAMETER Target
     use: dev or prod. promote/deploy: a release tag such as v2026.10.04.
@@ -84,7 +90,8 @@
 param(
     [Parameter(Mandatory = $true, Position = 0)]
     [ValidateSet('get-changes', 'use', 'pin', 'promote', 'deploy', 'publish', 'archive', 'hotfix',
-                 'install', 'uninstall', 'start', 'stop', 'restart', 'status', 'update', 'logs', 'doctor')]
+                 'install', 'uninstall', 'start', 'stop', 'restart', 'status', 'update', 'logs', 'doctor',
+                 'console-runner')]
     [string]$Action,
 
     # use: dev|prod. promote/deploy: a release tag.
@@ -108,8 +115,10 @@ param(
     [switch]$Follow,
 
     # get-changes: branch, tag or commit to check out (default: pull the
-    # branch each dev folder is already on).
+    # branch each dev folder is already on). -PiRef does the same for the
+    # Pis' dev checkouts, which are a different repo.
     [string]$Ref,
+    [string]$PiRef,
 
     # pin: what the test was, free-text notes, and optional overrides for the
     # firmware reference and the Pi commit (when the Pi cannot be reached).
@@ -129,8 +138,13 @@ param(
     [switch]$WithConfig,
     [switch]$AllowPrerelease,
 
-    # pin/deploy: leave the Pi alone (pin keeps novaGround's current pin).
+    # get-changes/use/pin/deploy/hotfix: leave every Pi alone (pin keeps
+    # novaGround's current pin and records other Pis as not checked).
     [switch]$SkipPi,
+
+    # deploy: also deploy these Pis (e.g. NovaThermo), each to the commit the
+    # release recorded it running with. Without it, deploy leaves their code alone.
+    [string[]]$AlsoDeploy,
 
     # publish: print what would be pushed/created without doing it.
     [switch]$DryRun
@@ -225,6 +239,14 @@ $RepoRoot = Split-Path -Parent $OpsDir
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 
 $AllComponents = @('backend', 'frontend', 'fas', 'console')
+
+# Set by the Nova Console's runner (ops\console\Invoke-ConsoleJob.ps1): nobody is
+# at a terminal, so never prompt (ssh gets BatchMode and no -t).
+$NonInteractive = [bool]$env:NOVA_NONINTERACTIVE
+
+# The scheduled task that runs actions started from the Nova Console.
+$ConsoleRunnerTaskPath = '\Nova\'
+$ConsoleRunnerTaskName = 'Console Runner'
 if ($null -eq $Only -or $Only.Count -eq 0) { $Only = $AllComponents }
 
 # ---------------------------------------------------------------------------
@@ -595,6 +617,24 @@ function Write-FrontendEnv {
     Write-Ok "Wrote $target"
 }
 
+function Get-ConsolePasswordHash {
+    # PBKDF2-HMAC-SHA256 of the password (UTF-8), the same as Python's
+    # hashlib.pbkdf2_hmac('sha256', ...) that nova_console.py checks it with.
+    param([string]$Password)
+    $salt = New-Object byte[] 16
+    [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($salt)
+    $iterations = 200000
+    $kdf = New-Object Security.Cryptography.Rfc2898DeriveBytes($Password, $salt, $iterations,
+                                                                [Security.Cryptography.HashAlgorithmName]::SHA256)
+    try { $hash = $kdf.GetBytes(32) } finally { $kdf.Dispose() }
+    return [ordered]@{
+        scheme     = 'pbkdf2-sha256'
+        iterations = $iterations
+        salt       = [Convert]::ToBase64String($salt)
+        hash       = [Convert]::ToBase64String($hash)
+    }
+}
+
 function Write-ConsoleConfig {
     # The console reads a plain JSON file so it stays a stdlib-only program with
     # no PowerShell dependency, and so it survives a repo update untouched.
@@ -616,6 +656,13 @@ function Write-ConsoleConfig {
         } finally { $script:Only = $saveOnly }
     }
 
+    $hosts = [ordered]@{}
+    $pis = @()
+    foreach ($p in @(Get-Pis)) {
+        $hosts[$p.Name] = [ordered]@{ ip = $p.Host; mdns = $p.Mdns }
+        $pis += [ordered]@{ name = $p.Name; ip = $p.Host; mdns = $p.Mdns; target = $p.Target; pinned = $p.Pinned }
+    }
+
     $payload = [ordered]@{
         generated = (Get-Date).ToString('s')
         broker    = [ordered]@{
@@ -623,9 +670,20 @@ function Write-ConsoleConfig {
             host    = $cfg.Broker.Host
             port    = $cfg.Broker.Port
         }
-        hosts     = [ordered]@{
-            'novaGround' = [ordered]@{ ip = $cfg.Hosts.NovaGround; mdns = $cfg.HostNames.NovaGround }
-            'novaThermo' = [ordered]@{ ip = $cfg.Hosts.NovaThermo; mdns = $cfg.HostNames.NovaThermo }
+        hosts     = $hosts
+        # The Pis report themselves to /api/pi-report (nova-pi.sh report). The
+        # console accepts reports only from these names, and checks each Pi's
+        # backend against environments.<env>.backend.
+        pis       = @($pis)
+        environments = [ordered]@{
+            prod = [ordered]@{ backend = (Get-ExpectedBackend 'prod') }
+            dev  = [ordered]@{ backend = (Get-ExpectedBackend 'dev') }
+        }
+        piStateFile = (Join-Path $cfg.StateDir 'pis.json')
+        # The console's banner shows the commits dev runs (it reads .git directly).
+        checkouts = [ordered]@{
+            prod = [ordered]@{ backend = $cfg.Environments.prod.BackendPath; frontend = $cfg.Environments.prod.FrontendPath }
+            dev  = [ordered]@{ backend = $cfg.Environments.dev.BackendPath; frontend = $cfg.Environments.dev.FrontendPath }
         }
         server    = $cfg.Hosts.Server
         logDir    = $cfg.LogDir
@@ -635,6 +693,16 @@ function Write-ConsoleConfig {
         }
         services  = $services
         releaseIndex = $cfg.ReleaseIndex
+        # Actions started from the console's buttons: job files go here, and
+        # the runner task (Nova.ps1 console-runner) runs them as the station account.
+        jobs      = [ordered]@{
+            dir  = (Get-ConsoleJobsDir)
+            task = "$ConsoleRunnerTaskPath$ConsoleRunnerTaskName"
+        }
+        # The console asks for prod's AdminPassword before an action that
+        # changes state. Only a salted hash goes in this file, which any local
+        # account can read.
+        actionAuth = (Get-ConsolePasswordHash $cfg.Environments.prod.AdminPassword)
     }
 
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $cfg.ConsoleCfg) | Out-Null
@@ -846,20 +914,14 @@ function Invoke-Status {
         }
     }
 
+    $live = Get-LiveStack
     Write-Host ""
-    Write-Host "  [remote hosts]" -ForegroundColor White
-    foreach ($name in @('NovaGround', 'NovaThermo')) {
-        $ip = $cfg.Hosts[$name]
-        $reachable = Test-Connection -ComputerName $ip -Count 1 -Quiet -ErrorAction SilentlyContinue
-        if ($reachable) {
-            Write-Host ("    {0,-24} {1,-10} {2}" -f $name, 'reachable', $ip) -ForegroundColor Green
-        } else {
-            Write-Host ("    {0,-24} {1,-10} {2}" -f $name, 'NO REPLY', $ip) -ForegroundColor Red
-        }
-    }
+    Write-Host "  [Pis]" -ForegroundColor White
+    try { Write-PiStatus -Live $live }
+    catch { Write-Warn "Could not read the Pis: $($_.Exception.Message)" }
+
     Write-Host ""
     Write-Host "  [versions]" -ForegroundColor White
-    $live = Get-LiveStack
     if ($live) { Write-Host "    live stack               $live" -ForegroundColor Green }
     else { Write-Host "    live stack               none" -ForegroundColor Red }
     $novaBranch = (Invoke-Git $RepoRoot @('rev-parse', '--abbrev-ref', 'HEAD') -AllowFail).Text
@@ -953,7 +1015,7 @@ function Invoke-Doctor {
     Check 'Nova repo' $isRepo $(if ($isRepo) { $RepoRoot } else { "$RepoRoot is not a git checkout - see ops/README.md" })
 
     $ssh = Get-Command ssh.exe -ErrorAction SilentlyContinue
-    Check 'ssh (pin/deploy the Pi)' ($null -ne $ssh) $(if ($null -ne $ssh) { '' } else { 'enable the Windows OpenSSH Client feature' })
+    Check 'ssh (drives the Pis)' ($null -ne $ssh) $(if ($null -ne $ssh) { '' } else { 'enable the Windows OpenSSH Client feature' })
 
     $gh = Get-Command gh.exe -ErrorAction SilentlyContinue
     Check 'gh (publish only)' ($null -ne $gh) $(if ($null -ne $gh) { '' } else { 'winget install GitHub.cli, then gh auth login' })
@@ -965,6 +1027,11 @@ function Invoke-Doctor {
     }
 
     Check 'WinSW cached' (Test-Path $cfg.WinSW.Exe) $cfg.WinSW.Exe
+
+    $runner = Get-ScheduledTask -TaskPath $ConsoleRunnerTaskPath -TaskName $ConsoleRunnerTaskName -ErrorAction SilentlyContinue
+    $runnerDetail = 'the console buttons copy commands instead - run: .\ops\Nova.ps1 console-runner'
+    if ($null -ne $runner) { $runnerDetail = "runs as $($runner.Principal.UserId)" }
+    Check 'console runner task' ($null -ne $runner) $runnerDetail
 
     $broker = Get-Service -Name $cfg.Broker.ServiceName -ErrorAction SilentlyContinue
     Check 'mosquitto service' ($null -ne $broker) $(if ($null -ne $broker) { "$($broker.Status)" } else { 'install Mosquitto' })
@@ -983,10 +1050,28 @@ function Invoke-Doctor {
     $serverIp = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $cfg.Hosts.Server }
     Check 'server IP configured' ($null -ne $serverIp) "$($cfg.Hosts.Server) expected on this PC"
 
-    foreach ($name in @('NovaGround', 'NovaThermo')) {
-        $ip = $cfg.Hosts[$name]
-        $up = Test-Connection -ComputerName $ip -Count 1 -Quiet -ErrorAction SilentlyContinue
-        Check "$name reachable" $up $ip
+    $pinnedOk = $true
+    try { [void](Get-PinnedPi) } catch { $pinnedOk = $false; $pinnedWhy = $_.Exception.Message }
+    if ($pinnedOk) { Check 'pinned Pi' $true "$($cfg.Pi.Pinned) (the other Pis are recorded as 'ran with')" }
+    else { Check 'pinned Pi' $false $pinnedWhy }
+
+    foreach ($p in @(Get-Pis)) {
+        $up = Test-Connection -ComputerName $p.Host -Count 1 -Quiet -ErrorAction SilentlyContinue
+        Check "$($p.Name) reachable" $up $p.Host
+        if (-not $up) { continue }
+        $s = Get-PiState $p
+        Check "$($p.Name) SSH without password" ($null -ne $s) $(if ($null -ne $s) { "$($cfg.Pi.User)@$($p.Host)" } else { "set up a key: ssh-copy-id $($cfg.Pi.User)@$($p.Host) (docs/deployment/novaground-setup.md)" })
+        if ($null -eq $s) { continue }
+        $installCmd = "on the Pi: sudo $($cfg.Pi.DevDir)/nova-pi.sh install --name $($p.Name) --target $($p.Target)"
+        Check "$($p.Name) novaGround@ units" ($s.Migrated -and $s.Legacy -eq 'none') $(if ($s.Migrated -and $s.Legacy -eq 'none') { '' } else { $installCmd })
+        $idOk = ($s.Name -eq $p.Name -and $s.Target -eq $p.Target)
+        Check "$($p.Name) identity" $idOk $(if ($idOk) { "runs $($s.Target)" } else { "pi.env says '$($s.Name)' / '$($s.Target)'; fix $installCmd" })
+        foreach ($e in @('prod', 'dev')) {
+            $i = $s.Instances[$e]
+            $want = Get-ExpectedBackend $e
+            $okEnv = ($i.Configured -and $i.Backend -eq $want)
+            Check "$($p.Name) $e settings" $okEnv $(if ($okEnv) { "backend $want" } elseif ($i.Configured) { "backend $($i.Backend), should be $want - .\ops\Nova.ps1 use <live stack> rewrites it" } else { "missing - .\ops\Nova.ps1 use <live stack> writes it" })
+        }
     }
 
     if (-not [string]::IsNullOrWhiteSpace($envCfg.FasPort)) {
@@ -1032,6 +1117,43 @@ function New-NovaShortcuts {
     }
 }
 
+function Invoke-ConsoleRunner {
+    # The Nova Console runs as a service account (SYSTEM) with no SSH keys or
+    # GitHub login, and deploy/install restart the console itself. So the
+    # console's buttons queue a job and start this scheduled task, which runs
+    # ops\console\Invoke-ConsoleJob.ps1 as this account, elevated, outside the
+    # console's process tree. See docs/design/pi-orchestration.md.
+    Assert-Admin
+    if ($NonInteractive) { throw "console-runner asks for a password, so it can't run from the console. Run it in an elevated PowerShell." }
+    $runnerScript = Join-Path $OpsDir 'console\Invoke-ConsoleJob.ps1'
+    if (-not (Test-Path $runnerScript)) { throw "Missing $runnerScript." }
+    $jobsDir = Get-ConsoleJobsDir
+    New-Item -ItemType Directory -Force -Path $jobsDir | Out-Null
+
+    $user = "$env:USERDOMAIN\$env:USERNAME"
+    Write-Step "Registering '$ConsoleRunnerTaskPath$ConsoleRunnerTaskName' to run as $user"
+    Write-Ok "Windows needs this account's password to run the task while nobody is logged in."
+    Write-Ok "It's stored by Task Scheduler, not by Nova."
+    $cred = Get-Credential -UserName $user -Message "Password for $user (runs the Nova Console's actions)"
+    if ($null -eq $cred) { throw 'No password given; nothing was registered.' }
+
+    $consoleService = "nova-prod-console"
+    $arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$runnerScript`" -JobsDir `"$jobsDir`" -ConsoleService $consoleService"
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arguments -WorkingDirectory $RepoRoot
+    # One job at a time; a deploy plus npm build can take a while.
+    $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 3) `
+                    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+    try {
+        Register-ScheduledTask -TaskPath $ConsoleRunnerTaskPath -TaskName $ConsoleRunnerTaskName -Action $action `
+            -Settings $settings -User $user -Password $cred.GetNetworkCredential().Password -RunLevel Highest -Force | Out-Null
+    } catch {
+        throw "Could not register the task (wrong password?): $($_.Exception.Message)"
+    }
+    Write-Ok "Registered. The console's buttons now run Nova.ps1 as $user."
+    Write-Ok "Check it from the console: Quick actions > Doctor (it should pass 'SSH without password' for every Pi)."
+    Write-Warn "If this account's password changes, run this again."
+}
+
 # ---------------------------------------------------------------------------
 # Server state
 #
@@ -1042,6 +1164,7 @@ function New-NovaShortcuts {
 function Get-EnvConfigDir { param([string]$EnvName) return (Join-Path $cfg.ConfigRoot $EnvName) }
 function Get-HistoryDir   { return (Join-Path $cfg.ConfigRoot 'history') }
 function Get-EnvDataDir   { param([string]$EnvName) return (Join-Path $cfg.DataRoot $EnvName) }
+function Get-ConsoleJobsDir { return (Join-Path $cfg.StateDir 'console-jobs') }
 
 function Get-Prop {
     # Read a property off parsed JSON that may not have it. StrictMode turns a
@@ -1348,26 +1471,441 @@ function Import-Commit {
     throw "Commit $Sha is not in $Path, and neither origin nor $DevPath could supply it."
 }
 
+# ---------------------------------------------------------------------------
+# Raspberry Pis
+#
+# Every Pi runs the novaGround repo as novaGround@prod / novaGround@dev
+# (nova-pi.sh). Nova.ps1 owns each Pi's /etc/nova/novaGround-<env>.env and
+# switches the Pis along with the PC; the Pi owns /etc/nova/pi.env (which Pi
+# it is). Only $cfg.Pi.Pinned is pinned by a release; the others are recorded
+# as "ran with". See docs/design/pi-orchestration.md.
+# ---------------------------------------------------------------------------
+
+function Get-Pis {
+    # The Pis named in the settings, the pinned one first.
+    $list = @()
+    $targets = $cfg.Pi.Targets
+    if ($null -eq $targets) { $targets = @{} }
+    foreach ($name in @($targets.Keys | Sort-Object)) {
+        $piHost = $cfg.Hosts[$name]
+        if (-not $piHost) { Write-Warn "Pi '$name' has no address under Hosts in nova.settings.ps1 - skipping it."; continue }
+        $list += [pscustomobject]@{
+            Name   = $name
+            Host   = $piHost
+            Mdns   = $cfg.HostNames[$name]
+            Target = $targets[$name]
+            Pinned = ($name -eq $cfg.Pi.Pinned)
+        }
+    }
+    return @($list | Sort-Object @{ Expression = { -not $_.Pinned } }, Name)
+}
+
+function Get-PinnedPi {
+    $p = @(Get-Pis | Where-Object { $_.Pinned })
+    if ($p.Count -eq 0) {
+        throw "Pi.Pinned ('$($cfg.Pi.Pinned)') in nova.settings.ps1 is not one of Pi.Targets ($(@($cfg.Pi.Targets.Keys) -join ', '))."
+    }
+    return $p[0]
+}
+
+function Find-Pi {
+    param([string]$Name)
+    $p = @(Get-Pis | Where-Object { $_.Name -eq $Name })
+    if ($p.Count -eq 0) { throw "Unknown Pi '$Name'. The Pis in nova.settings.ps1 are: $(@(Get-Pis | ForEach-Object { $_.Name }) -join ', ')." }
+    return $p[0]
+}
+
+function ConvertTo-Base64 {
+    param([string]$Text)
+    return [Convert]::ToBase64String((New-Object Text.UTF8Encoding $false).GetBytes(($Text -replace "`r`n", "`n")))
+}
+
 function Invoke-PiSsh {
-    # -Tty: interactive (sudo prompts, live build output); output not captured.
-    param([string]$Command, [switch]$Tty)
+    # -Tty: interactive (sudo prompts, live build output), straight to this
+    # console and not captured. Without it, BatchMode makes a missing SSH key
+    # fail at once instead of waiting for a password nobody will type.
+    param($Pi, [string]$Command, [switch]$Tty)
     $sshArgs = @('-o', 'ConnectTimeout=8')
-    if ($Tty) { $sshArgs += '-t' }
-    $sshArgs += @("$($cfg.Pi.User)@$($cfg.Hosts.NovaGround)", $Command)
+    # From the console's runner there is no terminal: no -t, and no prompts
+    # (the Pi needs passwordless sudo). Output still streams to the job log,
+    # because ssh inherits the runner's redirected stdout.
+    if ($Tty -and -not $NonInteractive) { $sshArgs += '-t' } else { $sshArgs += @('-o', 'BatchMode=yes') }
+    $sshArgs += "$($cfg.Pi.User)@$($Pi.Host)"
     if ($Tty) {
-        try { & ssh.exe @sshArgs; $code = $LASTEXITCODE } catch { $code = 127 }
+        # A child process on this console, so output streams live and sudo can
+        # prompt (& ssh.exe inside a function would be captured instead). The
+        # remote command is one double-quoted argument, so it must not hold
+        # double quotes itself; Invoke-PiScript base64-encodes scripts for that.
+        if ($Command.Contains('"')) { throw "Remote command contains a double quote, which Windows would mangle: $Command" }
+        $psi = New-Object Diagnostics.ProcessStartInfo 'ssh.exe'
+        $psi.Arguments = ($sshArgs -join ' ') + ' "' + $Command + '"'
+        $psi.UseShellExecute = $false
+        try {
+            $proc = [Diagnostics.Process]::Start($psi)
+            $proc.WaitForExit()
+            $code = $proc.ExitCode
+        } catch { $code = 127 }
         return [pscustomobject]@{ Code = $code; Out = @() }
     }
-    return (Invoke-Native 'ssh.exe' $sshArgs -AllowFail)
+    return (Invoke-Native 'ssh.exe' ($sshArgs + $Command) -AllowFail)
+}
+
+function Invoke-PiScript {
+    # Run a bash script on a Pi. It travels base64-encoded, so its quotes and
+    # $s get through Windows PowerShell's native-argument handling untouched.
+    param($Pi, [string]$Script, [switch]$Tty)
+    $cmd = 'f=$(mktemp) && echo ' + (ConvertTo-Base64 $Script) + ' | base64 -d > $f && bash $f; rc=$?; rm -f $f; exit $rc'
+    return (Invoke-PiSsh -Pi $Pi -Command $cmd -Tty:$Tty)
+}
+
+function Get-PiScript {
+    # One of the Pi scripts below, with the settings' paths filled in.
+    param([string]$Script, [hashtable]$Values = @{})
+    $s = $Script.Replace('__PROD_DIR__', $cfg.Pi.ProdDir).Replace('__DEV_DIR__', $cfg.Pi.DevDir)
+    foreach ($k in $Values.Keys) { $s = $s.Replace("__$($k)__", [string]$Values[$k]) }
+    return $s
+}
+
+function Get-PiEnvFileText {
+    # What /etc/nova/novaGround-<env>.env holds, from the settings. Nothing
+    # time-dependent, so an unchanged file stays byte-identical and the Pi
+    # doesn't restart novaGround for nothing.
+    param([string]$EnvName)
+    $server = $cfg.Hosts.Server
+    $lines = @(
+        "# novaGround settings for the $EnvName environment, written by Nova.ps1 from",
+        '# ops/nova.settings.ps1 on the ops PC. Do not edit: the next use, deploy or',
+        '# get-changes overwrites it. Change the settings on the ops PC instead.',
+        "NOVA_BROKER=${server}:$($cfg.Broker.Port)",
+        "NOVA_BACKEND=${server}:$($cfg.Environments[$EnvName].BackendPort)",
+        # The prod console stays up while dev is live, so both report there.
+        "NOVA_CONSOLE=http://${server}:$($cfg.Environments.prod.ConsolePort)"
+    )
+    return (($lines -join "`n") + "`n")
+}
+
+function Get-ExpectedBackend {
+    param([string]$EnvName)
+    return "$($cfg.Hosts.Server):$($cfg.Environments[$EnvName].BackendPort)"
+}
+
+# Prints key=value lines describing a Pi; Get-PiState parses them. Works on
+# Pis that haven't been moved to novaGround@ yet, so status can say so.
+function Get-PiStateScriptText {
+    return @'
+PROD_DIR='__PROD_DIR__'
+DEV_DIR='__DEV_DIR__'
+kv() { printf '%s=%s\n' "$1" "$2"; }
+val() { [ -f "$1" ] && grep -s "^$2=" "$1" | tail -n 1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//'; }
+kv template "$([ -f /etc/systemd/system/novaGround@.service ] && echo yes || echo no)"
+legacy=none
+if [ -f /etc/systemd/system/novaGround.service ]; then legacy=$(systemctl is-active novaGround.service 2>/dev/null); fi
+kv legacy "$legacy"
+kv name "$(val /etc/nova/pi.env NOVA_PI_NAME)"
+kv target "$(val /etc/nova/pi.env NOVA_TARGET)"
+kv release "$(val /etc/nova/deployed release)"
+kv bench "$(tmux list-sessions -F '#S' 2>/dev/null | grep -m 1 '^NovaGround')"
+for e in prod dev; do
+  if [ "$e" = prod ]; then d=$PROD_DIR; else d=$DEV_DIR; fi
+  kv "$e.state" "$(systemctl is-active "novaGround@$e.service" 2>/dev/null)"
+  kv "$e.configured" "$([ -f "/etc/nova/novaGround-$e.env" ] && echo yes || echo no)"
+  kv "$e.backend" "$(val "/etc/nova/novaGround-$e.env" NOVA_BACKEND)"
+  kv "$e.commit" "$(git -C "$d" rev-parse HEAD 2>/dev/null)"
+  b=$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)
+  [ "$b" = HEAD ] && b='(detached)'
+  kv "$e.branch" "$b"
+  kv "$e.dirty" "$(git -C "$d" status --porcelain --untracked-files=no 2>/dev/null | head -n 20 | tr '\n' '|')"
+done
+kv end yes
+'@
+}
+
+function Get-PiState {
+    # What a Pi is running, read over SSH, or $null if it can't be reached.
+    param($Pi)
+    $r = Invoke-PiScript -Pi $Pi -Script (Get-PiScript (Get-PiStateScriptText))
+    $kv = @{}
+    foreach ($line in $r.Out) { if ($line -match '^([A-Za-z.]+)=(.*)$') { $kv[$Matches[1]] = $Matches[2] } }
+    if ($r.Code -ne 0 -or -not $kv.ContainsKey('end')) { return $null }
+    $inst = @{}
+    foreach ($e in @('prod', 'dev')) {
+        $inst[$e] = [pscustomobject]@{
+            State      = [string]$kv["$e.state"]
+            Configured = ($kv["$e.configured"] -eq 'yes')
+            Backend    = [string]$kv["$e.backend"]
+            Commit     = [string]$kv["$e.commit"]
+            Branch     = [string]$kv["$e.branch"]
+            Dirty      = @(([string]$kv["$e.dirty"]) -split '\|' | Where-Object { $_ })
+        }
+    }
+    $active = $null
+    if ($inst['prod'].State -eq 'active') { $active = 'prod' }
+    elseif ($inst['dev'].State -eq 'active') { $active = 'dev' }
+    elseif ($kv['legacy'] -eq 'active') { $active = 'legacy' }
+    $bench = $null
+    if ($kv['bench'] -match '^NovaGround-(prod|dev)$') { $bench = $Matches[1] }
+    elseif ($kv['bench']) { $bench = 'unknown' }
+    return [pscustomobject]@{
+        Pi        = $Pi
+        Migrated  = ($kv['template'] -eq 'yes')
+        Legacy    = [string]$kv['legacy']
+        Name      = [string]$kv['name']
+        Target    = [string]$kv['target']
+        Release   = [string]$kv['release']
+        Active    = $active
+        Bench     = $bench
+        Instances = $inst
+    }
+}
+
+function Get-PiRunningEnv {
+    # Which checkout a Pi is running novaGround from: the active instance,
+    # else a run.sh bench session, else none.
+    param($State)
+    if ($State.Active -eq 'prod' -or $State.Active -eq 'dev') { return [pscustomobject]@{ Env = $State.Active; Label = $State.Active } }
+    if ($State.Active -eq 'legacy') { return [pscustomobject]@{ Env = 'prod'; Label = 'prod (old novaGround.service)' } }
+    if ($State.Bench -eq 'prod' -or $State.Bench -eq 'dev') { return [pscustomobject]@{ Env = $State.Bench; Label = "$($State.Bench) (run.sh)" } }
+    return [pscustomobject]@{ Env = $null; Label = 'nothing' }
 }
 
 function Get-PiDevCommit {
+    param($Pi)
     $d = $cfg.Pi.DevDir
-    $r = Invoke-PiSsh "git -C $d rev-parse HEAD && git -C $d rev-parse --abbrev-ref HEAD && git -C $d status --porcelain --untracked-files=no | head -n 20"
+    $r = Invoke-PiSsh -Pi $Pi -Command "git -C $d rev-parse HEAD && git -C $d rev-parse --abbrev-ref HEAD && git -C $d status --porcelain --untracked-files=no | head -n 20"
     if ($r.Code -ne 0 -or $r.Out.Count -lt 2 -or $r.Out[0] -notmatch '^[0-9a-f]{40}$') { return $null }
     $branch = $r.Out[1]
     if ($branch -eq 'HEAD') { $branch = '(detached)' }
     return [pscustomobject]@{ Commit = $r.Out[0]; Branch = $branch; Dirty = @($r.Out | Select-Object -Skip 2 | Where-Object { $_ }) }
+}
+
+# Writes both env files, then (unless CONFIG_ONLY) runs ENV's instance and
+# stops the other. Exit codes: 3 old single unit, 4 bench session, 5 didn't
+# stay up, 10 couldn't write the settings.
+function Get-PiStackScriptText {
+    return @'
+ENV_NAME='__ENV__'
+CONFIG_ONLY='__CONFIG_ONLY__'
+DEV_DIR='__DEV_DIR__'
+changed=no
+write_env() {
+  local f="/etc/nova/novaGround-$1.env" before after
+  before=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)
+  echo "$2" | base64 -d | sudo tee "$f" >/dev/null || exit 10
+  sudo chmod 644 "$f"
+  after=$(sha256sum "$f" | cut -d' ' -f1)
+  if [ "$before" != "$after" ]; then
+    echo "    $f updated"
+    [ "$1" = "$ENV_NAME" ] && changed=yes
+  fi
+}
+sudo mkdir -p /etc/nova || exit 10
+write_env prod '__PROD_B64__'
+write_env dev '__DEV_B64__'
+[ "$CONFIG_ONLY" = yes ] && exit 0
+if [ ! -f /etc/systemd/system/novaGround@.service ]; then
+  echo "    This Pi still has the old single novaGround.service. Move it to novaGround@prod/@dev on the Pi:"
+  echo "        sudo $DEV_DIR/nova-pi.sh install"
+  exit 3
+fi
+OTHER=dev; [ "$ENV_NAME" = dev ] && OTHER=prod
+if tmux list-sessions -F '#S' 2>/dev/null | grep -q '^NovaGround'; then
+  echo "    A run.sh bench session is running and would fight the service. Stop it on the Pi: ./run.sh --kill"
+  exit 4
+fi
+if systemctl is-active --quiet "novaGround@$OTHER.service"; then
+  sudo systemctl stop "novaGround@$OTHER.service" && echo "    stopped novaGround@$OTHER"
+fi
+if systemctl is-active --quiet "novaGround@$ENV_NAME.service"; then
+  if [ "$changed" = yes ]; then
+    sudo systemctl restart "novaGround@$ENV_NAME.service" && echo "    restarted novaGround@$ENV_NAME on its new settings"
+  fi
+else
+  sudo systemctl start "novaGround@$ENV_NAME.service"
+  sleep 2
+fi
+if ! systemctl is-active --quiet "novaGround@$ENV_NAME.service"; then
+  echo "    novaGround@$ENV_NAME did not stay up:"
+  journalctl -u "novaGround@$ENV_NAME.service" -n 12 --no-pager 2>/dev/null | sed 's/^/      /'
+  exit 5
+fi
+echo "    novaGround@$ENV_NAME is running"
+sudo systemctl start --no-block nova-pi-report.service 2>/dev/null
+exit 0
+'@
+}
+
+function Set-PiStack {
+    # Write every Pi's prod and dev settings from nova.settings.ps1, then
+    # (unless -ConfigOnly) run $EnvName's instance and stop the other. Prints
+    # what to do by hand for each Pi that didn't make it, and returns their names.
+    param([string]$EnvName, [switch]$ConfigOnly, [object[]]$Pis)
+    if ($null -eq $Pis) { $Pis = @(Get-Pis) }
+    $configOnlyText = 'no'
+    if ($ConfigOnly) { $configOnlyText = 'yes' }
+    $remote = Get-PiScript (Get-PiStackScriptText) @{
+        ENV         = $EnvName
+        CONFIG_ONLY = $configOnlyText
+        PROD_B64    = (ConvertTo-Base64 (Get-PiEnvFileText 'prod'))
+        DEV_B64     = (ConvertTo-Base64 (Get-PiEnvFileText 'dev'))
+    }
+    $failed = @()
+    foreach ($p in $Pis) {
+        if ($ConfigOnly) { Write-Step "$($p.Name): writing its prod and dev settings ($($p.Host))" }
+        else { Write-Step "$($p.Name): switching to $EnvName ($($p.Host))" }
+        $r = Invoke-PiScript -Pi $p -Script $remote -Tty
+        if ($r.Code -eq 0) { continue }
+        $failed += $p.Name
+        $why = switch ($r.Code) {
+            3       { 'it still has the old novaGround.service' }
+            4       { 'a run.sh bench session is running' }
+            5       { "novaGround@$EnvName did not stay up" }
+            10      { 'its settings could not be written' }
+            255     { 'it could not be reached over SSH' }
+            default { "exit code $($r.Code)" }
+        }
+        Write-Err "$($p.Name) was not updated: $why."
+        Write-Err "  By hand: ssh $($cfg.Pi.User)@$($p.Host), then:"
+        if ($r.Code -ne 3) {
+            Write-Err "    sudo $($cfg.Pi.DevDir)/nova-pi.sh configure --env $EnvName --broker $($cfg.Hosts.Server):$($cfg.Broker.Port) --backend $(Get-ExpectedBackend $EnvName)"
+        }
+        if (-not $ConfigOnly) { Write-Err "    sudo $($cfg.Pi.DevDir)/nova-pi.sh use $EnvName" }
+    }
+    return $failed
+}
+
+function Get-PiRanWith {
+    # What every Pi except the pinned one was running, for the release record.
+    # novaGround is the authority; the others are notes, never pins. Returns
+    # @{ RanWith = <ordered>; Warnings = @() }.
+    param([string]$PinnedCommit)
+    $ranWith = [ordered]@{}
+    $warnings = @()
+    foreach ($p in @(Get-Pis | Where-Object { -not $_.Pinned })) {
+        if ($SkipPi) {
+            $ranWith[$p.Name] = [ordered]@{ target = $p.Target; checked = $false; note = 'not checked (-SkipPi)' }
+            continue
+        }
+        Write-Step "Reading what $($p.Name) is running ($($cfg.Pi.User)@$($p.Host))"
+        $s = Get-PiState $p
+        if ($null -eq $s) {
+            $ranWith[$p.Name] = [ordered]@{ target = $p.Target; checked = $false; note = 'could not be reached over SSH' }
+            $warnings += "$($p.Name) could not be reached, so this release doesn't record what it ran."
+            continue
+        }
+        $run = Get-PiRunningEnv $s
+        $checkout = $run.Env
+        if (-not $checkout) { $checkout = 'dev' }
+        $i = $s.Instances[$checkout]
+        $target = $s.Target
+        if (-not $target) { $target = $p.Target }
+        $same = ($i.Commit -and $i.Commit -eq $PinnedCommit)
+        $commit = $null
+        if ($i.Commit) { $commit = $i.Commit }
+        $ranWith[$p.Name] = [ordered]@{
+            target     = $target
+            checked    = $true
+            running    = $run.Label
+            checkout   = $checkout
+            commit     = $commit
+            branch     = $i.Branch
+            dirty      = $i.Dirty.Count
+            matchesPin = $same
+        }
+        if (-not $commit) { $warnings += "$($p.Name) has no commit in its $checkout checkout." }
+        if ($i.Dirty.Count -gt 0) {
+            $warnings += "$($p.Name) ran with $($i.Dirty.Count) uncommitted change(s) in its $checkout checkout. That code can't be rebuilt later; commit it on the Pi."
+        }
+        if (-not $run.Env) { $warnings += "$($p.Name) wasn't running novaGround, so its dev checkout was recorded." }
+        if ($commit -and -not $same) {
+            $warnings += "$($p.Name) ran $($commit.Substring(0, 7)) ($($i.Branch)), not the pinned novaGround commit. That's allowed; the release records it as 'ran with'."
+        }
+    }
+    return [pscustomobject]@{ RanWith = $ranWith; Warnings = $warnings }
+}
+
+function Get-PiFlags {
+    # Everything about one Pi that disagrees with the PC, the settings or the
+    # release prod runs, each with the command that fixes it.
+    param($State, [string]$Live, $ProdManifest)
+    $p = $State.Pi
+    $flags = @()
+    $run = Get-PiRunningEnv $State
+    if ($State.Active -eq 'legacy' -or ($State.Legacy -ne 'none' -and $State.Legacy)) {
+        $flags += "still has the old novaGround.service. On the Pi: sudo $($cfg.Pi.DevDir)/nova-pi.sh install --name $($p.Name) --target $($p.Target)"
+    } elseif (-not $State.Migrated) {
+        $flags += "novaGround@ units are not installed. On the Pi: sudo $($cfg.Pi.DevDir)/nova-pi.sh install --name $($p.Name) --target $($p.Target)"
+    }
+    if ($State.Name -and $State.Name -ne $p.Name) { $flags += "calls itself '$($State.Name)' in /etc/nova/pi.env; the settings call it '$($p.Name)'" }
+    if ($State.Target -and $State.Target -ne $p.Target) { $flags += "runs $($State.Target); the settings say $($p.Target)" }
+    if ($Live) {
+        if (-not $run.Env) { $flags += "runs nothing while $Live is live: .\ops\Nova.ps1 use $Live" }
+        elseif ($run.Env -ne $Live) { $flags += "runs $($run.Env) while the PC's live stack is ${Live}: .\ops\Nova.ps1 use $Live" }
+    }
+    foreach ($e in @('prod', 'dev')) {
+        $i = $State.Instances[$e]
+        $expected = Get-ExpectedBackend $e
+        if (-not $i.Configured) { $flags += "has no $e settings yet: .\ops\Nova.ps1 use <live stack> writes them" }
+        elseif ($i.Backend -ne $expected) { $flags += "$e settings point at $($i.Backend), not ${expected}: .\ops\Nova.ps1 use <live stack> rewrites them" }
+    }
+    if ($p.Pinned -and $null -ne $ProdManifest) {
+        $pin = Get-PinCommit $ProdManifest 'pi/novaGround'
+        $have = $State.Instances['prod'].Commit
+        if ($pin -and $have -and $pin -ne $have) {
+            $flags += "prod checkout is $($have.Substring(0, 7)), but prod's release pins $($pin.Substring(0, 7)): .\ops\Nova.ps1 deploy"
+        }
+    }
+    if ($State.Bench) { $flags += "a run.sh bench session ($($State.Bench)) is running" }
+    return $flags
+}
+
+function Write-PiStatus {
+    # The [Pis] block of `status`.
+    param([string]$Live)
+    $prodManifest = $null
+    $prodRelease = (Get-EnvState 'prod').release
+    if ($prodRelease) { $prodManifest = Get-ReleaseManifest $prodRelease }
+    $running = @{}
+    foreach ($p in @(Get-Pis)) {
+        $label = $p.Name
+        if ($p.Pinned) { $label = "$label (pinned)" }
+        $up = Test-Connection -ComputerName $p.Host -Count 1 -Quiet -ErrorAction SilentlyContinue
+        if (-not $up) {
+            Write-Host ("    {0,-24} {1,-10} {2}" -f $label, 'NO REPLY', $p.Host) -ForegroundColor Red
+            continue
+        }
+        $s = Get-PiState $p
+        if ($null -eq $s) {
+            Write-Host ("    {0,-24} {1,-10} {2}  (ssh without a password failed - see docs/deployment/novaground-setup.md)" -f $label, 'reachable', $p.Host) -ForegroundColor Yellow
+            continue
+        }
+        $run = Get-PiRunningEnv $s
+        $colour = 'Green'
+        if (-not $run.Env) { $colour = 'Red' }
+        Write-Host ("    {0,-24} {1,-10} {2}  running {3}" -f $label, 'reachable', $p.Host, $run.Label) -ForegroundColor $colour
+        foreach ($e in @('prod', 'dev')) {
+            $i = $s.Instances[$e]
+            $c = '-------'
+            if ($i.Commit) { $c = $i.Commit.Substring(0, 7) }
+            $extra = ''
+            if ($i.Dirty.Count -gt 0) { $extra += "  +$($i.Dirty.Count) uncommitted" }
+            if ($e -eq 'prod' -and $s.Release) { $extra += "  release $($s.Release)" }
+            $be = '(no settings)'
+            if ($i.Configured) { $be = $i.Backend }
+            Write-Host ("      {0,-6} {1}  {2,-22} backend {3}{4}" -f $e, $c, $i.Branch, $be, $extra)
+        }
+        foreach ($f in @(Get-PiFlags -State $s -Live $Live -ProdManifest $prodManifest)) { Write-Host "      ! $f" -ForegroundColor Yellow }
+        if ($run.Env -and $s.Instances[$run.Env].Commit) { $running[$p.Name] = $s.Instances[$run.Env].Commit }
+    }
+    # Other Pis may run another version than the pinned one. Allowed; just say so.
+    $pinnedName = $cfg.Pi.Pinned
+    if ($running.ContainsKey($pinnedName)) {
+        foreach ($name in @($running.Keys | Where-Object { $_ -ne $pinnedName })) {
+            if ($running[$name] -ne $running[$pinnedName]) {
+                Write-Host ("    note: $name runs $($running[$name].Substring(0, 7)), $pinnedName runs $($running[$pinnedName].Substring(0, 7)). " +
+                            "Allowed; pin records it as 'ran with'.") -ForegroundColor Cyan
+            }
+        }
+    }
 }
 
 function Get-GitHubBase {
@@ -1449,6 +1987,7 @@ function Update-ReleaseIndex {
             kind    = (Get-Prop $m 'kind')
             stable  = ($stable -contains $tag)
             pins    = (Get-Prop $m 'pins')
+            ranWith = (Get-Prop $m 'ranWith')
         }
     }
     $latest = $null
@@ -1502,6 +2041,23 @@ function New-ReleaseNotes {
         $change = if (-not $old) { '-' } elseif ($old -eq $sha) { 'unchanged' } elseif ($base) { "[changes]($base/compare/$old...$sha)" } else { 'changed' }
         $L.Add("| $($part.Label) | $shaCell | $(Get-Prop $pin 'branch') | $change |")
     }
+    # Pis that ran alongside novaGround: recorded, never pinned.
+    $ranWith = Get-Prop $m 'ranWith'
+    if ($null -ne $ranWith) {
+        $gBase = Get-GitHubBase 'pi/novaGround'
+        foreach ($rw in @($ranWith.PSObject.Properties)) {
+            $v = $rw.Value
+            $c = [string](Get-Prop $v 'commit')
+            if ((Get-Prop $v 'checked') -and $c) {
+                $cell = if ($gBase) { "[``$($c.Substring(0, 7))``]($gBase/commit/$c)" } else { "``$($c.Substring(0, 7))``" }
+                $note = if (Get-Prop $v 'matchesPin') { 'same as novaGround' } else { '**differs from novaGround**' }
+                if ([int](Get-Prop $v 'dirty') -gt 0) { $note += ', with uncommitted changes' }
+                $L.Add("| $($rw.Name) (ran with, not pinned) | $cell | $(Get-Prop $v 'branch') | $note |")
+            } else {
+                $L.Add("| $($rw.Name) (ran with, not pinned) | - | - | not recorded: $(Get-Prop $v 'note') |")
+            }
+        }
+    }
 
     $configs = @(Get-Prop $m 'config')
     if ($configs.Count -gt 0) {
@@ -1516,7 +2072,7 @@ function New-ReleaseNotes {
         $L.Add("**Recordings from this test:** " + (($recs | ForEach-Object { "``$_``" }) -join ', '))
     }
     $L.Add('')
-    $L.Add("Deploy: ``.\ops\Nova.ps1 deploy $Tag`` on the ops PC; ``sudo ./nova-pi.sh deploy $Tag`` on the Pi.")
+    $L.Add("Deploy: ``.\ops\Nova.ps1 deploy $Tag`` on the ops PC (it deploys novaGround over SSH; add ``-AlsoDeploy <Pi>`` for a Pi that ran with it). By hand on the Pi: ``sudo ./nova-pi.sh deploy $Tag``.")
     return ($L -join "`n")
 }
 
@@ -1526,6 +2082,8 @@ function New-ReleaseNotes {
 
 function Invoke-GetChanges {
     Assert-Admin
+    # Goes into a bash script on each Pi, so keep it to ref characters.
+    if ($PiRef -and $PiRef -notmatch '^[A-Za-z0-9._/-]+$') { throw "-PiRef '$PiRef' isn't a branch, tag or commit name." }
     $targets = @()
     if ($Only -contains 'backend' -or $Only -contains 'fas') { $targets += [pscustomobject]@{ Name = 'backend'; Path = $envCfg.BackendPath } }
     if ($Only -contains 'frontend') { $targets += [pscustomobject]@{ Name = 'frontend'; Path = $envCfg.FrontendPath } }
@@ -1568,11 +2126,56 @@ function Invoke-GetChanges {
 
     Invoke-Install
 
+    $piFailed = @()
+    if ($SkipPi) {
+        Write-Warn "Pis left alone (-SkipPi). On each, by hand: cd $($cfg.Pi.DevDir) && git pull && ./nova-pi.sh build --env dev"
+    } else {
+        foreach ($p in @(Get-Pis)) {
+            Write-Step "$($p.Name): dev checkout $($cfg.Pi.DevDir) ($($p.Host))"
+            $r = Invoke-PiScript -Pi $p -Script (Get-PiScript (Get-PiGetChangesScriptText) @{ REF = $PiRef }) -Tty
+            if ($r.Code -ne 0) {
+                $piFailed += $p.Name
+                Write-Err "$($p.Name): updating its dev checkout failed (exit $($r.Code)). By hand: ssh $($cfg.Pi.User)@$($p.Host), then:"
+                Write-Err "  cd $($cfg.Pi.DevDir) && git pull && ./nova-pi.sh build --env dev"
+            }
+        }
+        # New settings take effect when dev next starts (use dev).
+        $piFailed += @(Set-PiStack 'dev' -ConfigOnly)
+    }
+
     Write-Host ""
     Write-Ok "Dev is ready. Next:"
     Write-Ok "  .\ops\Nova.ps1 use dev"
-    Write-Ok "Pi (if its code changed):  ssh $($cfg.Pi.User)@$($cfg.Hosts.NovaGround)"
-    Write-Ok "  cd $($cfg.Pi.DevDir) && git pull && ./nova-pi.sh build --env dev"
+    if ($piFailed.Count -gt 0) { Write-Warn "Check these Pis first (see above): $(@($piFailed | Select-Object -Unique) -join ', ')" }
+}
+
+function Get-PiGetChangesScriptText {
+    # get-changes on a Pi: fetch, check out __REF__ if given, fast-forward,
+    # build dev, and restart novaGround@dev if it's running.
+    return @'
+d='__DEV_DIR__'
+ref='__REF__'
+cd "$d" || { echo "    no dev checkout at $d"; exit 10; }
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+  echo "    uncommitted changes here (git refuses anything that would overwrite them):"
+  git status --porcelain --untracked-files=no | sed 's/^/      /'
+fi
+git fetch --all --prune -q || echo "    fetch failed (offline?) - using what was already fetched"
+if [ -n "$ref" ]; then git checkout -q "$ref" || exit 11; fi
+b=$(git rev-parse --abbrev-ref HEAD)
+if [ "$b" = HEAD ]; then
+  echo "    detached HEAD - nothing to pull"
+elif git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
+  git merge -q --ff-only '@{u}' || { echo "    $b can't fast-forward to its upstream (local commits?)"; exit 12; }
+fi
+echo "    now at $(git log -1 --format='%h %s') ($b)"
+# Through bash: the pull may have rewritten nova-pi.sh without its executable bit.
+bash ./nova-pi.sh build --env dev || exit 13
+if systemctl is-active --quiet novaGround@dev.service; then
+  sudo systemctl restart novaGround@dev.service && echo "    restarted novaGround@dev on the new build"
+fi
+exit 0
+'@
 }
 
 function Invoke-Use {
@@ -1587,13 +2190,24 @@ function Invoke-Use {
     Write-Step "Starting $Target"
     Set-StackRunning $Target $true
 
+    # The Pis follow the PC, with settings rewritten from nova.settings.ps1 so
+    # each points at this stack's backend (issue #29).
+    $piFailed = @()
+    if ($SkipPi) {
+        Write-Warn "Pis left alone (-SkipPi). On each Pi: sudo $($cfg.Pi.DevDir)/nova-pi.sh use $Target"
+    } else {
+        $piFailed = @(Set-PiStack $Target)
+    }
+
     Write-Host ""
     if ($Target -eq 'dev') {
-        Write-Warn "Dev is live. Prod stays stopped until: .\ops\Nova.ps1 use prod  (or a reboot - prod starts on boot)."
+        Write-Warn "Dev is live. Prod stays stopped until: .\ops\Nova.ps1 use prod  (or a reboot - prod starts on boot, PC and Pis)."
         Write-Warn "Operator UI for dev: http://$($cfg.Hosts.Server):$($cfg.Environments.dev.FrontendPort)"
-        Write-Warn "Pi: stop its prod service and run dev by hand -  sudo systemctl stop novaGround; cd $($cfg.Pi.DevDir) && ./run.sh"
     } else {
-        Write-Ok "Prod is live. Pi: sudo systemctl start novaGround  (if you stopped it for dev)"
+        Write-Ok "Prod is live."
+    }
+    if ($piFailed.Count -gt 0) {
+        Write-Err "Not switched: $($piFailed -join ', '). Until they are, they upload to the wrong backend or not at all (see above)."
     }
 }
 
@@ -1604,11 +2218,14 @@ function New-Release {
     # Returns the tag.
     param(
         [System.Collections.Specialized.OrderedDictionary]$Pins,
+        # Pis that ran alongside, recorded but not pinned (Get-PiRanWith).
+        [System.Collections.Specialized.OrderedDictionary]$RanWith,
         [string]$EnvName,
         [string]$Kind,
         [string[]]$Warnings = @(),
         [switch]$Stable
     )
+    if ($null -eq $RanWith) { $RanWith = [ordered]@{} }
     $current = Get-Pins 'HEAD'
     $tag = New-ReleaseTagName
     $releaseDir = Join-Path $RepoRoot "releases\$tag"
@@ -1651,6 +2268,7 @@ function New-Release {
         operator   = "$env:USERNAME@$env:COMPUTERNAME"
         previous   = $prevTag
         pins       = $Pins
+        ranWith    = $RanWith
         config     = $configFiles
         recordings = @($recordings | Sort-Object)
     }
@@ -1691,6 +2309,16 @@ function New-Release {
         $sha = $Pins[$part.Path].commit
         $was = if ($current[$part.Path] -eq $sha) { 'unchanged' } else { 'CHANGED' }
         Write-Ok ("  {0,-22} {1}  {2,-22} {3}" -f $part.Label, $sha.Substring(0, 7), $Pins[$part.Path].branch, $was)
+    }
+    foreach ($name in @($RanWith.Keys)) {
+        $v = $RanWith[$name]
+        if ($v['checked'] -and $v['commit']) {
+            $same = 'differs from novaGround'
+            if ($v['matchesPin']) { $same = 'same as novaGround' }
+            Write-Ok ("  {0,-22} {1}  {2,-22} {3}" -f "$name (ran with)", ([string]$v['commit']).Substring(0, 7), $v['branch'], $same)
+        } else {
+            Write-Warn ("  {0,-22} {1}" -f "$name (ran with)", $v['note'])
+        }
     }
     Write-Ok "  config: $(@($configFiles | ForEach-Object { $_.file }) -join ', ')"
     Write-Ok "  recordings: $($recordings.Count)"
@@ -1735,8 +2363,9 @@ function Invoke-Pin {
         $pins[$part.Path] = [ordered]@{ commit = $c.Commit; branch = $c.Branch }
     }
 
-    # novaGround: the Pi's dev checkout, over SSH.
+    # novaGround: the pinned Pi's dev checkout, over SSH.
     $gp = 'pi/novaGround'
+    $pinnedPi = Get-PinnedPi
     if ($GroundCommit) {
         if ($GroundCommit -notmatch '^[0-9a-f]{40}$') { throw "-GroundCommit needs the full 40-character hash (run 'git rev-parse HEAD' on the Pi)." }
         $gb = if ($GroundBranch) { $GroundBranch } else { '(given by hand)' }
@@ -1747,10 +2376,10 @@ function Invoke-Pin {
         $pins[$gp] = [ordered]@{ commit = $current[$gp]; branch = '(unchanged)' }
         $warnings += "novaGround pin kept unchanged (-SkipPi) - make sure that is what the Pi ran."
     } else {
-        Write-Step "Reading the Pi's dev commit ($($cfg.Pi.User)@$($cfg.Hosts.NovaGround):$($cfg.Pi.DevDir))"
-        $pi = Get-PiDevCommit
+        Write-Step "Reading $($pinnedPi.Name)'s dev commit ($($cfg.Pi.User)@$($pinnedPi.Host):$($cfg.Pi.DevDir))"
+        $pi = Get-PiDevCommit $pinnedPi
         if ($null -eq $pi) {
-            throw ("Could not read the Pi's dev commit over SSH. Fix SSH, or re-run with " +
+            throw ("Could not read $($pinnedPi.Name)'s dev commit over SSH. Fix SSH, or re-run with " +
                    "-GroundCommit <full hash from 'git rev-parse HEAD' in $($cfg.Pi.DevDir)> -GroundBranch <its branch>, " +
                    "or -SkipPi to keep the current novaGround pin.")
         }
@@ -1760,7 +2389,20 @@ function Invoke-Pin {
         }
         if (-not (Test-UsualBranch $pi.Branch)) { $unusual += "novaGround (Pi) on '$($pi.Branch)'" }
         $pins[$gp] = [ordered]@{ commit = $pi.Commit; branch = $pi.Branch }
+
+        # The dev checkout is what gets pinned, so it should be what ran.
+        $st = Get-PiState $pinnedPi
+        if ($null -ne $st) {
+            $run = Get-PiRunningEnv $st
+            if ($run.Env -ne 'dev') {
+                $warnings += "$($pinnedPi.Name) was running $($run.Label), not its dev checkout. Make sure $($cfg.Pi.DevDir) is the code you tested."
+            }
+        }
     }
+
+    # Every other Pi: what it ran with, recorded but never pinned.
+    $rw = Get-PiRanWith ([string]$pins[$gp].commit)
+    $warnings += @($rw.Warnings)
 
     # Firmware: a reference, changed only when you say so.
     if ($Firmware) {
@@ -1783,7 +2425,7 @@ function Invoke-Pin {
         $warnings += "Pinned from outside the usual branches ($(Get-UsualBranchText)): $($unusual -join '; '). Explain why in -Notes or the release notes."
     }
 
-    $tag = @(New-Release -Pins $pins -EnvName 'dev' -Kind 'test' -Warnings $warnings)[-1]
+    $tag = @(New-Release -Pins $pins -RanWith $rw.RanWith -EnvName 'dev' -Kind 'test' -Warnings $warnings)[-1]
 
     Write-Host ""
     Write-Ok "Next: .\ops\Nova.ps1 promote $tag   (once it is proven stable)"
@@ -1857,10 +2499,11 @@ function Invoke-Hotfix {
         $plan += [pscustomobject]@{ Part = $part; Edits = $edits; Head = (Invoke-Git $part.Prod @('rev-parse', 'HEAD')).Text }
     }
     $pi = $null
+    $pinnedPi = Get-PinnedPi
     if (-not $SkipPi) {
         $d = $cfg.Pi.ProdDir
-        Write-Step "Checking the Pi's prod checkout ($($cfg.Pi.User)@$($cfg.Hosts.NovaGround):$d)"
-        $r = Invoke-PiSsh "git -C $d rev-parse HEAD && (git -C $d rev-parse --verify --quiet refs/heads/$branch >/dev/null && echo BRANCH-EXISTS || echo BRANCH-FREE) && git -C $d status --porcelain"
+        Write-Step "Checking $($pinnedPi.Name)'s prod checkout ($($cfg.Pi.User)@$($pinnedPi.Host):$d)"
+        $r = Invoke-PiSsh -Pi $pinnedPi -Command "git -C $d rev-parse HEAD && (git -C $d rev-parse --verify --quiet refs/heads/$branch >/dev/null && echo BRANCH-EXISTS || echo BRANCH-FREE) && git -C $d status --porcelain"
         if ($r.Code -ne 0 -or $r.Out.Count -lt 2 -or $r.Out[0] -notmatch '^[0-9a-f]{40}$') {
             throw "Could not read the Pi's prod checkout over SSH. Fix SSH, or re-run with -SkipPi if the Pi was not edited."
         }
@@ -1914,7 +2557,7 @@ function Invoke-Hotfix {
         $pins[$gp] = [ordered]@{ commit = $current[$gp]; branch = '(unchanged)' }
     } elseif ($pi.Edits.Count -gt 0) {
         $d = $cfg.Pi.ProdDir
-        $r = Invoke-PiSsh ("git -C $d switch -q -c $branch && git -C $d add -A && " +
+        $r = Invoke-PiSsh -Pi $pinnedPi -Command ("git -C $d switch -q -c $branch && git -C $d add -A && " +
                            "git -C $d -c user.name='NovaOps server' -c user.email=nova@pi commit -q -m '$subject' && git -C $d rev-parse HEAD")
         $sha = @($r.Out | Where-Object { $_ -match '^[0-9a-f]{40}$' } | Select-Object -Last 1)
         if ($r.Code -ne 0 -or $sha.Count -eq 0) {
@@ -1928,7 +2571,8 @@ function Invoke-Hotfix {
     }
     $pins['firmware'] = [ordered]@{ commit = $current['firmware']; branch = '(unchanged)' }
 
-    $tag = @(New-Release -Pins $pins -EnvName 'prod' -Kind 'hotfix' -Stable)[-1]
+    $rw = Get-PiRanWith ([string]$pins[$gp].commit)
+    $tag = @(New-Release -Pins $pins -RanWith $rw.RanWith -EnvName 'prod' -Kind 'hotfix' -Warnings @($rw.Warnings) -Stable)[-1]
     # Prod is already running exactly this.
     Set-EnvState 'prod' @{ release = $tag; deployed = (Get-Date).ToString('o') }
     Update-ReleaseIndex
@@ -1977,29 +2621,94 @@ function Sync-ReleaseConfig {
     }
 }
 
-function Invoke-PiDeploy {
+function Get-AlsoDeployJobs {
+    # -AlsoDeploy, checked against the release before anything is stopped:
+    # each Pi goes to the commit the release recorded it running with.
     param([string]$Tag, $Manifest)
+    $jobs = @()
+    foreach ($n in @($AlsoDeploy | Where-Object { $_ })) {
+        $p = Find-Pi $n
+        if ($p.Pinned) { throw "$($p.Name) is the pinned Pi; deploy always deploys it. Drop it from -AlsoDeploy." }
+        $sha = [string](Get-Prop (Get-Prop (Get-Prop $Manifest 'ranWith') $p.Name) 'commit')
+        if (-not $sha) {
+            throw ("$Tag has no 'ran with' record for $($p.Name) (pinned before releases recorded it, or the Pi " +
+                   "couldn't be reached at pin time), so there's no commit to deploy to it. Nothing was changed.")
+        }
+        $jobs += [pscustomobject]@{ Pi = $p; Sha = $sha }
+    }
+    if ($SkipPi -and $jobs.Count -gt 0) { throw "-SkipPi and -AlsoDeploy contradict each other. Nothing was changed." }
+    return $jobs
+}
+
+function Invoke-PiDeploy {
+    # novaGround gets the release's pinned commit, each -AlsoDeploy Pi the
+    # commit it ran with, and every Pi ends up on prod with fresh settings.
+    # Other Pis keep their code: they aren't part of the release.
+    param([string]$Tag, $Manifest, [object[]]$Also = @())
+    $jobs = @()
     $sha = Get-PinCommit $Manifest 'pi/novaGround'
-    if (-not $sha) { Write-Warn "$Tag pins no novaGround commit."; return }
+    if ($sha) { $jobs += [pscustomobject]@{ Pi = (Get-PinnedPi); Sha = $sha } }
+    else { Write-Warn "$Tag pins no novaGround commit." }
+    $jobs += @($Also)
+
     Write-Host ""
-    Write-Step "Pi: novaGround for $Tag is $sha"
-    $manual = @(
-        "ssh $($cfg.Pi.User)@$($cfg.Hosts.NovaGround)",
-        "cd $($cfg.Pi.ProdDir) && sudo ./nova-pi.sh deploy $Tag      (or: deploy $sha)"
-    )
+    foreach ($j in $jobs) { Write-Step "$($j.Pi.Name): novaGround for $Tag is $($j.Sha)" }
     if ($SkipPi) {
-        Write-Warn "Skipped (-SkipPi). To deploy it yourself:"
-        $manual | ForEach-Object { Write-Warn "  $_" }
+        Write-Warn "Pis skipped (-SkipPi). To do it yourself:"
+        foreach ($j in $jobs) {
+            Write-Warn "  on $($j.Pi.Name) (ssh $($cfg.Pi.User)@$($j.Pi.Host)):  sudo $($cfg.Pi.DevDir)/nova-pi.sh deploy $($j.Sha) --release $Tag"
+        }
+        Write-Warn "  then on every Pi:  sudo $($cfg.Pi.DevDir)/nova-pi.sh use prod"
         return
     }
-    # Run the Pi's dev copy of nova-pi.sh: that is the tooling that was just
-    # tested, so it knows `deploy` even when prod's copy is older.
-    $r = Invoke-PiSsh "sudo $($cfg.Pi.DevDir)/nova-pi.sh deploy $sha --release $Tag" -Tty
-    if ($r.Code -ne 0) {
-        Write-Err "The Pi deploy did not complete (unreachable, or it failed above). To do it yourself:"
-        $manual | ForEach-Object { Write-Err "  $_" }
-    } else {
-        Write-Ok "Pi deployed."
+
+    # Settings first, so novaGround@prod starts on prod's backend.
+    [void]@(Set-PiStack 'prod' -ConfigOnly)
+    foreach ($j in $jobs) {
+        Write-Step "$($j.Pi.Name): deploying $($j.Sha.Substring(0, 7))"
+        # Run the Pi's dev copy of nova-pi.sh: that is the tooling that was just
+        # tested, so it knows `deploy` (and the move to novaGround@) even when
+        # prod's copy is older.
+        # Through bash, in case a pull left it without its executable bit.
+        $r = Invoke-PiSsh -Pi $j.Pi -Command "sudo bash $($cfg.Pi.DevDir)/nova-pi.sh deploy $($j.Sha) --release $Tag" -Tty
+        if ($r.Code -ne 0) {
+            Write-Err "$($j.Pi.Name): the deploy did not complete (unreachable, or it failed above). By hand:"
+            Write-Err "  ssh $($cfg.Pi.User)@$($j.Pi.Host)"
+            Write-Err "  sudo $($cfg.Pi.DevDir)/nova-pi.sh deploy $($j.Sha) --release $Tag"
+        } else {
+            Write-Ok "$($j.Pi.Name) deployed."
+        }
+    }
+    [void]@(Set-PiStack 'prod')
+    Write-PiDeploySummary $Manifest
+}
+
+function Write-PiDeploySummary {
+    # After a deploy: what each Pi's prod runs, against the release.
+    param($Manifest)
+    Write-Host ""
+    Write-Step "Pis after the deploy"
+    $pin = Get-PinCommit $Manifest 'pi/novaGround'
+    foreach ($p in @(Get-Pis)) {
+        $s = Get-PiState $p
+        if ($null -eq $s) { Write-Warn ("  {0,-12} could not be read over SSH" -f $p.Name); continue }
+        $have = $s.Instances['prod'].Commit
+        $short = '-------'
+        if ($have) { $short = $have.Substring(0, 7) }
+        $run = (Get-PiRunningEnv $s).Label
+        if ($p.Pinned) {
+            $line = "  {0,-12} prod {1}  running {2}" -f $p.Name, $short, $run
+            if (-not $pin) { Write-Warn $line }
+            elseif ($have -eq $pin) { Write-Ok "$line  (the release's pin)" }
+            else { Write-Err "$line  (the release pins $($pin.Substring(0, 7)))" }
+        } else {
+            $ran = [string](Get-Prop (Get-Prop (Get-Prop $Manifest 'ranWith') $p.Name) 'commit')
+            $note = 'not part of the release'
+            if ($ran -and $ran -eq $have) { $note = 'what it ran with in this release' }
+            elseif ($ran) { $note = "ran with $($ran.Substring(0, 7)) in this release; -AlsoDeploy $($p.Name) puts it on that" }
+            if ($have -and $pin -and $have -ne $pin) { $note += "; differs from novaGround" }
+            Write-Host ("    {0,-12} prod {1}  running {2}  ({3})" -f $p.Name, $short, $run, $note) -ForegroundColor Cyan
+        }
     }
 }
 
@@ -2027,6 +2736,7 @@ function Invoke-Deploy {
 
     # Get every commit and check every checkout BEFORE stopping anything, so a
     # failure here leaves prod running untouched.
+    $alsoJobs = @(Get-AlsoDeployJobs $tag $m)
     $parts = @(Get-PinParts | Where-Object { $_.Prod })
     foreach ($part in $parts) {
         $sha = Get-PinCommit $m $part.Path
@@ -2059,7 +2769,7 @@ function Invoke-Deploy {
     Set-StackRunning 'prod' $true
     Update-ReleaseIndex
 
-    Invoke-PiDeploy $tag $m
+    Invoke-PiDeploy $tag $m $alsoJobs
 
     Write-Host ""
     Write-Ok "Prod is running $tag."
@@ -2398,4 +3108,5 @@ switch ($Action) {
     'update'    { throw "'update' is now two steps: get-changes (new code into dev) and deploy (a pinned release into prod). See ops/README.md." }
     'logs'      { Invoke-Logs }
     'doctor'    { Invoke-Doctor }
+    'console-runner' { Invoke-ConsoleRunner }
 }
