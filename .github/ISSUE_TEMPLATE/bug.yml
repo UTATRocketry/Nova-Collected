@@ -45,7 +45,7 @@ body:
     attributes:
       label: Where
       options:
-        - novaMock
+        - Simulator
         - Bench
         - Test stand
         - Launch site

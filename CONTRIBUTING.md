@@ -251,7 +251,7 @@ hands-on part of levels 2 and 3. You open
 the UI and actually use it, going through everything that needs checking, and
 for each step it says how you know it worked.
 
-- **Simulators** need no hardware: `tools/novaMock.py` and
+- **Simulators** need no hardware: `tools/novaSim.py` and
   `tools/nova_dummy.py` in the backend, and
   `./run.sh --target novaMock --broker localhost:1883 --backend localhost:8001`
   on novaGround.
