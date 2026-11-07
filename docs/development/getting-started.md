@@ -42,7 +42,7 @@ In GitHub Desktop, add each `dev/` clone with **File → Add local repository**.
 | Broker | Mosquitto | `mosquitto -v` |
 | Backend + simulator (Windows) | Python 3.11+ | `scripts/dev_windows.ps1 -Broker localhost -WithMock`, then open `http://localhost:8000/docs` |
 | Backend (Linux/macOS) | Python 3.11+ | `scripts/dev_linux.sh --broker localhost`, then open `http://localhost:8000/docs` |
-| Simulator, if not started above | paho-mqtt | `python tools/novaMock.py --broker localhost` (stands in for novaGround and the FAS bridge) |
+| Simulator, if not started above | paho-mqtt | `python tools/novaSim.py --broker localhost` (stands in for novaGround and the FAS bridge) |
 | Frontend | Node 20+ | `npm install`, `cp .env.example .env.local`, `npm run dev`, then open `http://localhost:3000` |
 | novaGround | Raspberry Pi OS (Legacy, 64-bit) | see [novaGround's setup guide](https://github.com/UTATRocketry/novaGround/blob/dev/docs/setup.md); `./build/novaMock` needs no hardware |
 | FAS bench | STM32CubeIDE toolchain | `firmware/bench/bench.bat`, then open `http://127.0.0.1:8770` |

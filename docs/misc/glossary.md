@@ -29,6 +29,9 @@
   and Nova were built together for the Discovery rocket.
 - **novaGround**: the Pi software. **novaThermo**: the same code built for the
   thermocouple Pi. **novaMock**: the same code with no hardware.
+- **novaSim**: the backend's Python simulator (`tools/novaSim.py`), which
+  stands in for novaGround and the FAS bridge over MQTT. Not to be confused
+  with novaGround's **novaMock** build target above; novaSim needs no Pi.
 - **novaOps**: the backend and frontend together.
 - **novaLock**: the physical lockout key that gates hazardous commands.
 - **Gigafloss**: the FAS avionics stack and its firmware repo.
