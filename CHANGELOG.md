@@ -12,6 +12,16 @@ Each release lists the changes to this repo (ops tooling and docs). What
 changed in the code itself is in each code repo's own `CHANGELOG.md`, and the
 release page links to the exact commits that were tested.
 
+## [v2026.10.24](https://github.com/UTATRocketry/Nova-Collected/releases/tag/v2026.10.24) - 2026-10-24
+
+### Release
+
+- Pin v2026.10.24: Bench Test
+
+### Features
+
+- **ops:** switch, pin and report every Pi with the stack (#36)
+
 ## [v2026.10.22](https://github.com/UTATRocketry/Nova-Collected/releases/tag/v2026.10.22) - 2026-10-22
 
 ### Release
