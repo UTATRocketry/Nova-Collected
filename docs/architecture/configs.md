@@ -74,7 +74,7 @@ Sensors:
       hat_id: 0
       channel_id: 0
     convert:
-      method: linear           # none, zero_offset, linear, polynomial (default linear)
+      method: linear           # none, zero_offset, linear, polynomial, theil_sen, repeated_median (default linear)
       calibration:             # [raw volts, value] points
         - [1.99, 0.0]
         - [9.3034, 900.0]
@@ -84,11 +84,33 @@ A FAS sensor uses `source: FAS` with `board_type` (for example `EPB`),
 `board_id` and `channel`. The legacy form `node: "EPB_0"` is still accepted.
 
 > [!NOTE]
-> With calibration on (`POST /api/flags/calibration`), **every method except
-> `none` applies piecewise-linear interpolation** between the `calibration`
-> points. `zero_offset` and `polynomial` are accepted but not implemented
-> separately yet ([known issue](../../SUPPORT.md#known-issues)). With calibration off, values
-> are shown raw, in volts.
+> With calibration on (`POST /api/flags/calibration`), each method except
+> `none` fits one straight line through all the `calibration` points
+> (`app/services/data_service.py`, `convert_value`), and the line carries on
+> past the outermost points. A sensor with fewer than two points shows its raw
+> value. `zero_offset` and `polynomial` are accepted but not implemented
+> separately yet: they use the `linear` fit ([known issue](../../SUPPORT.md#known-issues)).
+> With calibration off, values are shown raw, in volts.
+
+The methods differ in how much one bad point can pull the line:
+
+| Method | Fit | Bad points it ignores |
+|---|---|---|
+| `linear` | Least squares | None: one bad point skews the whole line |
+| `theil_sen` | Slope is the median of the slopes between every pair of points | Up to about 29% of the points |
+| `repeated_median` | Siegel's repeated median: each point's median slope to the others, then the median of those | Up to half the points |
+
+Both robust methods take the intercept as the median of `value − slope × raw`
+over all points. Points with the same raw value give no slope between them,
+and a table whose raw values are all the same shows the raw value. A robust
+fit can't ignore a bad point in a table of three: it can't tell which one is
+wrong. To ignore one bad point, `repeated_median` needs at least four points
+and `theil_sen` at least five.
+
+The analysis tool (`src/lib/analysis/calibrate.ts`) applies the same robust
+fits for `theil_sen` and `repeated_median`. For `linear` it still joins the
+points with straight segments instead of fitting one line, so its values can
+differ from the live display.
 
 ### Actuators
 
