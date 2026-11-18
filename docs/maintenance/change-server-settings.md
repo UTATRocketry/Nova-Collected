@@ -61,8 +61,15 @@ What's set on the Pi itself is which Pi it is and which binary it runs:
 sudo ./nova-pi.sh install --name NovaThermo --target novaThermo
 ```
 
-Extra binary flags (`--verbosity 2`, `--publish-ms 100`) go in `NOVA_EXTRA_ARGS`
-in `/etc/nova/pi.env`; then run `sudo ./nova-pi.sh restart`.
+Everything else a Pi's environment file holds is set in `ops/nova.settings.ps1`
+under `Pi.Env.prod` and `Pi.Env.dev`, for every Pi, with `Pi.Overrides.<Pi>.<env>`
+for one Pi: `Verbosity`, `SampleMs`, `PublishMs`, `Stats`, `StatsMs`,
+`BenchFlags`, `SimScenario`, `StateDir` and `ExtraArgs`. `Nova.ps1 use`, `deploy`
+and `get-changes` write them, and novaGround restarts if they changed.
+`BenchFlags` is `off` in prod: with it off, `--stop-actuate` (which stops the Pi
+driving any output) is refused and the instance does not start.
+Flags for both environments on one Pi (`NOVA_GLOBAL_ARGS`) stay in
+`/etc/nova/pi.env`: `sudo ./nova-pi.sh configure --env dev --global-args "--verbosity 2"`.
 
 ## Sensor and actuator config
 

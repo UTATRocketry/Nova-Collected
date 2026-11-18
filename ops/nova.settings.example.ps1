@@ -119,6 +119,40 @@ $NovaSettings = @{
             NovaGround = 'novaGround'
             NovaThermo = 'novaThermo'
         }
+
+        # What every Pi's /etc/nova/novaGround-<env>.env holds besides the broker,
+        # backend and console (which come from Hosts, Broker and Environments).
+        # use/deploy/get-changes write all of it, so nothing set by hand with
+        # `nova-pi.sh configure` survives them: change it here. An empty value
+        # leaves the setting to the binary's own default.
+        #   Verbosity   0 quiet, 1 info, 2 debug
+        #   SampleMs    DAQ sampling interval         PublishMs  telemetry interval
+        #   Stats       'on' | 'off': runtime instrumentation (nova/stats, nova/state)
+        #   StatsMs     how often stats are published
+        #   BenchFlags  'on' lets start.sh/run.sh pass --stop-actuate; otherwise they
+        #               refuse it and the instance does not start. Off in prod: a
+        #               stray flag there would stop prod driving valves.
+        #   SimScenario scenario file for the simulated hardware (the novaMock build)
+        #   StateDir    where last_upload.json goes (default /var/lib/nova/<env>)
+        #   ExtraArgs   more flags for this environment only
+        Env = @{
+            prod = @{
+                Verbosity = ''; SampleMs = ''; PublishMs = ''
+                Stats = 'off'; StatsMs = ''
+                BenchFlags = 'off'
+                SimScenario = ''; StateDir = ''; ExtraArgs = ''
+            }
+            dev = @{
+                Verbosity = ''; SampleMs = ''; PublishMs = ''
+                Stats = 'on'; StatsMs = ''
+                BenchFlags = 'on'
+                SimScenario = ''; StateDir = ''; ExtraArgs = ''
+            }
+        }
+
+        # Per-Pi changes on top of Env, by Pi name then environment, e.g.
+        #   NovaThermo = @{ dev = @{ Verbosity = '2' } }
+        Overrides = @{}
     }
 
     # -- Server state ------------------------------------------------------

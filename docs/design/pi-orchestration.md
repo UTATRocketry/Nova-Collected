@@ -86,14 +86,21 @@ The settings are split between three files:
 
 | File | Holds | Written by |
 |---|---|---|
-| `/etc/nova/pi.env` | `NOVA_PI_NAME`, `NOVA_TARGET`, `NOVA_EXTRA_ARGS` | `nova-pi.sh install`, once per Pi |
-| `/etc/nova/novaGround-prod.env` | `NOVA_BROKER`, `NOVA_BACKEND`, `NOVA_CONSOLE` for prod | `Nova.ps1` |
+| `/etc/nova/pi.env` | `NOVA_PI_NAME`, `NOVA_TARGET`, `NOVA_GLOBAL_ARGS` (flags for both environments) | `nova-pi.sh install`, once per Pi |
+| `/etc/nova/novaGround-prod.env` | `NOVA_BROKER`, `NOVA_BACKEND`, `NOVA_CONSOLE`, and every runtime, stats, bench-safety and extra-args setting, for prod | `Nova.ps1` |
 | `/etc/nova/novaGround-dev.env` | the same for dev | `Nova.ps1` |
 
 `Nova.ps1` rewrites both env files on every `use`, `deploy` and `get-changes`,
 using `Hosts.Server`, `Broker.Port` and each environment's `BackendPort` and
 `ConsolePort` from `nova.settings.ps1`. Prod always gets prod's port and dev
 always gets dev's, and nobody edits the files by hand. That's what fixes #29.
+The runtime settings (`Pi.Env.<env>` in `nova.settings.ps1`: verbosity, sample and
+publish intervals, stats, `BenchFlags`, scenario, state dir, extra args) are the
+same for every Pi unless `Pi.Overrides.<Pi>.<env>` changes them, so each Pi gets
+its own copy of the file. A value set by hand with `nova-pi.sh configure` is
+lost at the next rewrite: change it in the settings. A malformed value stops
+`Nova.ps1` before anything is written.
+
 `Nova.ps1` writes the files itself (base64 over SSH) rather than calling
 `nova-pi.sh`, so it works whichever version of `nova-pi.sh` the Pi has checked
 out.

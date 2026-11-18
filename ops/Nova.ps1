@@ -1566,21 +1566,86 @@ function Get-PiScript {
     return $s
 }
 
+# The per-environment settings a Pi's env file can hold, in the order they are
+# written: file key, settings key, kind, help. Same keys and order as ENV_KEYS in
+# novaGround's nova-pi.sh, which writes the same file by hand. The first three
+# are not here: they come from Hosts, Broker and Environments.
+$script:PiEnvSettings = @(
+    @{ Key = 'NOVA_VERBOSITY';    Name = 'Verbosity';   Kind = 'verbosity'; Help = 'Log detail: 0 quiet, 1 info, 2 debug.' }
+    @{ Key = 'NOVA_SAMPLE_MS';    Name = 'SampleMs';    Kind = 'ms';        Help = 'DAQ sampling interval in ms.' }
+    @{ Key = 'NOVA_PUBLISH_MS';   Name = 'PublishMs';   Kind = 'ms';        Help = 'Telemetry publish interval in ms.' }
+    @{ Key = 'NOVA_STATS';        Name = 'Stats';       Kind = 'onoff';     Help = 'Runtime instrumentation: on or off.' }
+    @{ Key = 'NOVA_STATS_MS';     Name = 'StatsMs';     Kind = 'ms';        Help = 'How often stats are published, in ms.' }
+    @{ Key = 'NOVA_BENCH_FLAGS';  Name = 'BenchFlags';  Kind = 'onoff';     Help = 'Allow bench-safety flags such as --stop-actuate (on or off). start.sh and run.sh refuse them when off.' }
+    @{ Key = 'NOVA_SIM_SCENARIO'; Name = 'SimScenario'; Kind = 'text';      Help = 'Scenario file for the simulated hardware (the novaMock build).' }
+    @{ Key = 'NOVA_STATE_DIR';    Name = 'StateDir';    Kind = 'text';      Help = 'Where novaGround keeps last_upload.json (default /var/lib/nova/<env>).' }
+    @{ Key = 'NOVA_EXTRA_ARGS';   Name = 'ExtraArgs';   Kind = 'text';      Help = 'More flags for this environment only; they come after NOVA_GLOBAL_ARGS in pi.env.' }
+)
+
+function Get-PiEnvSettings {
+    # One Pi's settings for one environment: Pi.Env.<env>, then Pi.Overrides.<Pi>.<env>
+    # on top. Returns an ordered name -> value map; empty means "leave it to the
+    # binary's default". A malformed value throws, so a typo never reaches a Pi.
+    param([string]$EnvName, [string]$PiName)
+    $merged = [ordered]@{}
+    $sources = @()
+    if ($null -ne $cfg.Pi.Env) { $sources += , $cfg.Pi.Env[$EnvName] }
+    if ($PiName -and $null -ne $cfg.Pi.Overrides -and $null -ne $cfg.Pi.Overrides[$PiName]) { $sources += , $cfg.Pi.Overrides[$PiName][$EnvName] }
+    foreach ($src in $sources) {
+        if ($null -eq $src) { continue }
+        foreach ($k in $src.Keys) { $merged[[string]$k] = $src[$k] }
+    }
+    $known = @($script:PiEnvSettings | ForEach-Object { $_.Name })
+    foreach ($k in @($merged.Keys)) {
+        if ($known -notcontains $k) { throw "Pi settings for ${EnvName}: unknown setting '$k' (known: $($known -join ', '))." }
+    }
+    $out = [ordered]@{}
+    foreach ($def in $script:PiEnvSettings) {
+        $v = ''
+        if ($merged.Contains($def.Name) -and $null -ne $merged[$def.Name]) { $v = ([string]$merged[$def.Name]).Trim() }
+        $who = ''
+        if ($PiName) { $who = " ($PiName)" }
+        $where = "Pi settings for ${EnvName}${who}: $($def.Name)"
+        if ($v -match '["
+]') { throw "${where} must not contain double quotes or line breaks." }
+        if ($v) {
+            switch ($def.Kind) {
+                'onoff'     { if ($v -notmatch '^(?i:on|off)$') { throw "${where} must be 'on' or 'off', not '$v'." }; $v = $v.ToLower() }
+                'ms'        { if ($v -notmatch '^[1-9][0-9]*$') { throw "${where} must be a whole number of milliseconds, not '$v'." } }
+                'verbosity' { if ($v -notmatch '^[0-2]$') { throw "${where} must be 0, 1 or 2, not '$v'." } }
+            }
+        }
+        $out[$def.Name] = $v
+    }
+    return $out
+}
+
 function Get-PiEnvFileText {
-    # What /etc/nova/novaGround-<env>.env holds, from the settings. Nothing
-    # time-dependent, so an unchanged file stays byte-identical and the Pi
-    # doesn't restart novaGround for nothing.
-    param([string]$EnvName)
+    # What /etc/nova/novaGround-<env>.env holds for one Pi, from the settings:
+    # every setting nova-pi.sh configure can write, so a use, deploy or get-changes
+    # no longer drops the ones set by hand. Nothing time-dependent, so an unchanged
+    # file stays byte-identical and the Pi doesn't restart novaGround for nothing.
+    # An empty setting is written commented out, as nova-pi.sh does.
+    param([string]$EnvName, [string]$PiName)
     $server = $cfg.Hosts.Server
+    $values = Get-PiEnvSettings $EnvName $PiName
     $lines = @(
         "# novaGround settings for the $EnvName environment, written by Nova.ps1 from",
         '# ops/nova.settings.ps1 on the ops PC. Do not edit: the next use, deploy or',
         '# get-changes overwrites it. Change the settings on the ops PC instead.',
+        '# NOVA_BROKER and NOVA_BACKEND: from Hosts, Broker and Environments.',
         "NOVA_BROKER=${server}:$($cfg.Broker.Port)",
         "NOVA_BACKEND=${server}:$($cfg.Environments[$EnvName].BackendPort)",
-        # The prod console stays up while dev is live, so both report there.
+        '# The prod console stays up while dev is live, so both report there.',
         "NOVA_CONSOLE=http://${server}:$($cfg.Environments.prod.ConsolePort)"
     )
+    foreach ($def in $script:PiEnvSettings) {
+        $v = $values[$def.Name]
+        $lines += "# $($def.Help)"
+        if (-not $v) { $lines += "#$($def.Key)=" }
+        elseif ($v -match '\s') { $lines += "$($def.Key)=`"$v`"" }
+        else { $lines += "$($def.Key)=$v" }
+    }
     return (($lines -join "`n") + "`n")
 }
 
@@ -1742,14 +1807,14 @@ function Set-PiStack {
     if ($null -eq $Pis) { $Pis = @(Get-Pis) }
     $configOnlyText = 'no'
     if ($ConfigOnly) { $configOnlyText = 'yes' }
-    $remote = Get-PiScript (Get-PiStackScriptText) @{
+    $remoteBase = Get-PiScript (Get-PiStackScriptText) @{
         ENV         = $EnvName
         CONFIG_ONLY = $configOnlyText
-        PROD_B64    = (ConvertTo-Base64 (Get-PiEnvFileText 'prod'))
-        DEV_B64     = (ConvertTo-Base64 (Get-PiEnvFileText 'dev'))
     }
     $failed = @()
     foreach ($p in $Pis) {
+        # Each Pi's env files can differ (Pi.Overrides), so the script is per Pi.
+        $remote = $remoteBase.Replace('__PROD_B64__', (ConvertTo-Base64 (Get-PiEnvFileText 'prod' $p.Name))).Replace('__DEV_B64__', (ConvertTo-Base64 (Get-PiEnvFileText 'dev' $p.Name)))
         if ($ConfigOnly) { Write-Step "$($p.Name): writing its prod and dev settings ($($p.Host))" }
         else { Write-Step "$($p.Name): switching to $EnvName ($($p.Host))" }
         $r = Invoke-PiScript -Pi $p -Script $remote -Tty

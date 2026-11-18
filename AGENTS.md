@@ -63,6 +63,13 @@ Code repos, run inside their `dev/` clones:
 10. **Never change global git config in tests.** For a test-only setting,
     use `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0` / `GIT_CONFIG_VALUE_0` in the
     test process.
+11. **Compiled code never decides whether a configurable setting is allowed.**
+    novaGround and other binaries read a setting from their environment (the
+    env files `Nova.ps1` writes from `ops/nova.settings.ps1`) and only reject
+    values that are malformed. Policy checks, such as refusing `--stop-actuate`
+    unless the setting allows it, belong in `start.sh`/`run.sh` or the ops
+    scripts, and defaults differ per environment in the example settings, not
+    in the code. Otherwise a policy change means a rebuild and a bench test.
 
 ## Coding conventions (`ops/*.ps1`)
 
